@@ -1,0 +1,206 @@
+---
+title: "GiniPvalues"
+author: "Ben Margetts"
+date: "27/11/2017"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+
+```{r}
+library(ineq)
+library(vegan)
+library(ggplot2)
+library(dplyr)
+library(plotrix)
+library(gtools)
+```
+
+
+```{r}
+inputPath <- '/home/ben/Desktop/CBTSubsampleAnalysisPipeline23Nov17/CBTSubSampleOct17/Input'
+outputPath <- '/home/ben/Desktop/CBTSubsampleAnalysisPipeline23Nov17/CBTSubSampleOct17/SubsampleTestOutput'
+
+setwd(inputPath)
+
+files <- list.files(path=inputPath)
+```
+
+
+
+```{r}
+#example bootstrap using the same sample (should accept the null)
+setwd(inputPath)
+
+gini.dat1.master <- read.csv(files[2], stringsAsFactors = F, header = F)
+gini.dat2.master <- read.csv(files[5], stringsAsFactors = F, header = F)
+
+#gini.dat1.master <- read.csv('dcr_beta_AmAlF3-b.cdr3.gz', stringsAsFactors = F, header = F)
+#gini.dat2.master <- read.csv('dcr_alpha_CBF1000-a.cdr3.gz', stringsAsFactors = F, header = F)
+
+gini.dat1.master <- gini.dat1.master[order(gini.dat1.master$V2),]
+gini.dat2.master <- gini.dat2.master[order(gini.dat2.master$V2),]
+
+#Sort in increasing order
+#gini.dat1 <- tempFile[order(tempFile$V2),]
+gini.dat1 <- gini.dat1.master[-1]
+#gini.dat2 <- tempFile[order(tempFile$V2),]
+gini.dat2 <- gini.dat2.master[-1]
+
+
+#Order statistics
+gini.dat1$orderStat <- 1:nrow(gini.dat1)
+gini.dat2$orderStat <- 1:nrow(gini.dat2)
+
+
+#Parameters
+muhat1 <- mean(gini.dat1$V2)
+n1 <- max(gini.dat1$orderStat)
+yi1 <- gini.dat1$V2 # unique or not?
+i1 <- gini.dat1$orderStat # unique or not?
+muhat2 <- mean(gini.dat2$V2)
+n2 <- max(gini.dat2$orderStat)
+yi2 <- gini.dat2$V2 # unique or not?
+i2 <- gini.dat2$orderStat # unique or not?
+
+
+#Gini estimator comparison with ineq package
+ghat1 <- (2/(muhat1*n1^2)*sum(yi1*(i1-0.5))-1)
+ghat2 <- (2/(muhat2*n2^2)*sum(yi2*(i2-0.5))-1)
+
+
+#Series wi and vi
+wi1 <- (((2*i1)-1)*yi1)/(2*n1)
+visum1 <- vector()
+for (val1 in i1){
+  tempSum1 <- sum(gini.dat1$V2[gini.dat1$orderStat<=val1])
+  visum1 <- append(visum1, tempSum1)
+}
+vi1 <- (n1^-1)*visum1
+Ihat1 <- mean(wi1)
+
+wi2 <- (((2*i2)-1)*yi2)/(2*n2)
+visum2 <- vector()
+for (val2 in i2){
+  tempSum2 <- sum(gini.dat2$V2[gini.dat2$orderStat<=val2])
+  visum2 <- append(visum2, tempSum2)
+}
+vi2 <- (n2^-1)*visum2
+Ihat2 <- mean(wi2)
+
+
+#Bias corrected Gini estimator
+Gtilde1 <- n1*(2*Ihat1/muhat1-1)/(n1-1)
+Gtilde2 <- n2*(2*Ihat2/muhat2-1)/(n2-1)
+
+
+Zhati1 <- -(Gtilde1 + 1)*yi1 + 2*(wi1 - vi1)
+Zbar1 <- mean(Zhati1)
+Zhati2 <- -(Gtilde2 + 1)*yi2 + 2*(wi2 - vi2)
+Zbar2 <- mean(Zhati2)
+
+
+#Derive asymptotic standard error of bias corrected Gini estimator
+VarhatG1 <- (1/(n1*muhat1)^2) * sum((Zhati1 - Zbar1)^2) #asymptotic variance
+SEhatG1 <- sqrt(VarhatG1) #asymptotic standard error
+VarhatG2 <- (1/(n2*muhat2)^2) * sum((Zhati2 - Zbar2)^2) #asymptotic variance
+SEhatG2 <- sqrt(VarhatG2) #asymptotic standard error
+
+#FOR SAMPLE COMPARISON....
+Tau = (Gtilde1 - Gtilde2)/sqrt(SEhatG1^2 + SEhatG2^2) #test statistic
+
+
+
+#Bootstrap
+reps <- 10 #number of iterations
+Tjs <- vector()
+
+for (i in 1:reps){
+  #gini.dat1star <- tempFile[order(tempFile$V2),]
+  #gini.dat2star <- tempFile[order(tempFile$V2),]
+  #gini.dat1star <- read.csv(files[10], stringsAsFactors = F, header = F)
+  #gini.dat2star <- read.csv(files[100], stringsAsFactors = F, header = F)
+  gini.dat1star <- gini.dat1.master
+  gini.dat2star <- gini.dat2.master
+  
+  #randomly subsample with replcament
+  gini.dat1star <- gini.dat1star[sample(length(gini.dat1star$V1), length(gini.dat1star$V1), replace = T),]
+  gini.dat2star <- gini.dat2star[sample(length(gini.dat2star$V1), length(gini.dat2star$V1), replace = T),]
+  
+  gini.dat1star <- gini.dat1star[order(gini.dat1star$V2),]
+  gini.dat2star <- gini.dat2star[order(gini.dat2star$V2),]
+  
+  #Order statistics
+  gini.dat1star$orderStat <- 1:nrow(gini.dat1star)
+  gini.dat2star$orderStat <- 1:nrow(gini.dat2star)
+  
+  
+  gini.dat1star <- gini.dat1star[-1]
+  gini.dat2star <- gini.dat2star[-1]
+
+  
+  #Parameters
+  muhat1star <- mean(gini.dat1star$V2)
+  n1star <- max(gini.dat1star$orderStat)
+  yi1star <- gini.dat1star$V2 # unique or not?
+  i1star <- gini.dat1star$orderStat # unique or not?
+  muhat2star <- mean(gini.dat2star$V2)
+  n2star <- max(gini.dat2star$orderStat)
+  yi2star <- gini.dat2star$V2 # unique or not?
+  i2star <- gini.dat2star$orderStat # unique or not?
+  
+  #Gini estimator comparison with ineq package
+  ghat1star <- (2/(muhat1star*n1star^2)*sum(yi1star*(i1star-0.5))-1)
+  ghat2star <- (2/(muhat2star*n2star^2)*sum(yi2star*(i2star-0.5))-1)
+
+  
+  #Series wi and vi
+  wi1star <- (((2*i1star)-1)*yi1star)/(2*n1star)
+  visum1star <- vector()
+  for (val1star in i1star){
+    tempSum1star <- sum(gini.dat1star$V2[gini.dat1star$orderStat<=val1star])
+    visum1star <- append(visum1star, tempSum1star)
+  }
+  vi1star <- (n1star^-1)*visum1star
+  Ihat1star <- mean(wi1star)
+  
+  wi2star <- (((2*i2star)-1)*yi2star)/(2*n2star)
+  visum2star <- vector()
+  for (val2star in i2star){
+    tempSum2star <- sum(gini.dat2star$V2[gini.dat2star$orderStat<=val2star])
+    visum2star <- append(visum2star, tempSum2star)
+  }
+  vi2star <- (n2star^-1)*visum2star
+  Ihat2star <- mean(wi2star)
+  
+  
+  #Bias corrected Gini estimator
+  Gtilde1star <- n1star*(2*Ihat1star/muhat1star-1)/(n1star-1)
+  Gtilde2star <- n2star*(2*Ihat2star/muhat2star-1)/(n2star-1)
+
+  
+  Zhati1star <- -(Gtilde1star + 1)*yi1star + 2*(wi1star - vi1star)
+  Zbar1star <- mean(Zhati1star)
+  Zhati2star <- -(Gtilde2star + 1)*yi2star + 2*(wi2star - vi2star)
+  Zbar2star <- mean(Zhati2star)
+
+
+  #Derive asymptotic standard error of bias corrected Gini estimator
+  VarhatG1star <- (1/(n1star*muhat1star)^2) * sum((Zhati1star - Zbar1star)^2) #asymptotic variance
+  SEhatG1star <- sqrt(VarhatG1star) #asymptotic standard error
+  VarhatG2star <- (1/(n2star*muhat2star)^2) * sum((Zhati2star - Zbar2star)^2) #asymptotic variance
+  SEhatG2star <- sqrt(VarhatG2star) #asymptotic standard error
+  
+  #FOR SAMPLE COMPARISON....
+  Taustar = (Gtilde1star - Gtilde2star - Gtilde1 + Gtilde2)/sqrt(SEhatG1star^2 + SEhatG2star^2) #test statistic
+
+  Tjs <- append(Tjs, Taustar)
+}
+
+print(length(Tjs[Tjs>Tau]))
+
+
+```
+

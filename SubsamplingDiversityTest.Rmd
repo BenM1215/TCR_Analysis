@@ -1,0 +1,1167 @@
+---
+title: "CBTSubSamplingDiversityTest"
+author: "Ben Margetts"
+date: "07/11/2017"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+
+```{r}
+library(ineq)
+library(vegan)
+library(ggplot2)
+library(dplyr)
+library(plotrix)
+```
+
+
+```{r}
+subSampleLimit <- 0.2 #Ben advises 10.
+```
+
+
+
+```{r}
+inputPath <- '/home/ben/Desktop/CBTSubsampleAnalysisPipeline23Nov17/CBTSubSampleOct17/Input'
+outputPath <- '/home/ben/Desktop/CBTSubsampleAnalysisPipeline23Nov17/CBTSubSampleOct17/SubsampleTestOutput'
+
+setwd(inputPath)
+
+files <- list.files(path=inputPath)
+
+largest <- 0
+largestFile <- ''
+
+smallest <- 100000000
+smallestFile <- ''
+for (file in files){
+  tempFile <- read.csv(file, header = F, stringsAsFactors = F)
+  tempSize <- sum(tempFile$V2)
+
+  if (tempSize > largest) {
+    largest <- tempSize
+    largestFile <-file 
+    }
+  
+  if (tempSize < smallest) {
+    smallest <- tempSize
+    smallestFile <- file
+    }
+}
+
+#Make sure > 10% of largest TCR
+subsampleable <- vector()
+
+for (file in files){
+  tempFile <- read.csv(file, header = F, stringsAsFactors = F)
+  
+  if (sum(tempFile$V2)/largest > (subSampleLimit/100)){ #then it's within 10%
+    subsampleable <- append(subsampleable, file)
+  }
+}
+
+print(c('Total number of files = ', length(files)))
+print(c('Total number of files that can be subsampled = ', length(subsampleable)))
+
+#redefine smallest (now from subsampleable sequences) - note - must be more efficient way to do this?
+smallest <- 100000000
+for (file in subsampleable){
+  tempFile <- read.csv(file, header = F, stringsAsFactors = F)
+  tempSize <- sum(tempFile$V2)
+
+  if (tempSize < smallest) {
+    smallest <- tempSize
+    smallestFile <- file
+    }
+}
+```
+
+
+```{r}
+setwd(inputPath)
+
+#subsample all files, in-turn to smallest TCR
+
+for (file in subsampleable){
+  #expand cdr3 by frequency
+  tempFile <- read.csv(file, header = F, stringsAsFactors = F)
+  tempFile.expanded <- tempFile[rep(row.names(tempFile), tempFile$V2),]
+  
+  #generate sequence of numbers, 1: length of expanded file
+  tempLen <- length(tempFile.expanded$V1)
+  samplePool <- seq(1:tempLen)
+
+  #sample from numerical sequence, without replacement
+  index <- sample(samplePool, smallest, replace = F)
+  
+  #use sampled vector of integers to access expanded dataframe, taking at vector of indexes
+  subsampled <- tempFile.expanded[[1]][index]
+  
+  #collapse back into traditional .cdr3 freq format
+  subsampled.collapsed <- as.data.frame(table(subsampled))
+  colnames(subsampled.collapsed) <- c('Seq', 'Freq')
+  
+  #write as output file in output folder
+  write.table(subsampled.collapsed, paste(outputPath, '/', file, 'subsample', '.csv', sep = ''), row.names = F, col.names = T, sep = ',')
+}
+```
+
+```{r}
+ setwd(inputPath)
+  
+ reps <- 30 # number of repeated resamplings
+ 
+ ID <- vector()
+ pcnt <- vector()
+ numSeqs <- vector()
+ gini <- vector()
+ shannon <- vector()
+ numClones <- vector()
+ 
+ count <- 0
+ 
+ for (file in files){
+   
+    print((100/length(files))*count)
+    
+    tempFile <- read.csv(file, header = F, stringsAsFactors = F)
+    tempFile.expanded <- tempFile[rep(row.names(tempFile), tempFile$V2),]
+    
+    for (i in seq(1,100)){
+      
+      # current percentage
+      currPcnt <- i/100
+      
+      for (j in seq(1,reps)){
+      
+        # generate sequence of numbers, 1: length of expanded file
+        tempLen <- length(tempFile.expanded$V1)
+        samplePool <- seq(1:tempLen)
+        
+        # sample from numerical sequence, without replacement
+        index <- sample(samplePool, as.integer(sum(tempLen*currPcnt)), replace = F)
+        #  index <- sample(samplePool, smallest, replace = F)
+    
+        
+        # use sampled vector of integers to access expanded dataframe, taking at vector of indexes
+        subsampled <- tempFile.expanded[[1]][index]
+        
+        # collapse back into traditional .cdr3 freq format
+        subsampled.collapsed <- as.data.frame(table(subsampled))
+        colnames(subsampled.collapsed) <- c('Seq', 'Freq')
+        
+        ID <- append(ID, file)
+        pcnt <- append(pcnt, i)
+        numSeqs <- append(numSeqs, sum(subsampled.collapsed$Freq))
+        gini <- append(gini, ineq(subsampled.collapsed$Freq))
+        shannon <- append(shannon, diversity(subsampled.collapsed$Freq, index = 'shannon', base = 2))
+        numClones <- append(numClones, length(subsampled.collapsed$Seq))
+        
+      }
+      
+    }
+    count <- count+1
+  
+  }
+  
+  dat <- data.frame(ID, pcnt, numSeqs, gini, shannon, numClones)
+  names(dat) <- c('ID', 'pcnt', 'numSeqs', 'gini', 'shannon', 'numClones')
+
+```
+
+```{r}
+setwd(outputPath)
+
+#write.csv(dat, file = 'subsampleMultipleSamples.csv', sep=',', row.names = F)
+
+dat <- read.csv('subsampleMultipleSamples.csv', stringsAsFactors = F)
+
+```
+
+```{r}
+df <- dat %>% 
+  group_by(ID, pcnt, numSeqs) %>% 
+  summarise(meanGini = mean(gini),
+            sdGini = sd(gini),
+            seGini = std.error(gini),
+            meanShannon = mean(shannon),
+            sdShannon = sd(shannon),
+            seShannon = std.error(shannon),
+            meanNumSeqs = mean(numSeqs),
+            sdNumSeqs = sd(numSeqs),
+            seNumSeqs = std.error(numSeqs),
+            meanNumClones = mean(numClones),
+            sdNumClones = sd(numClones),
+            seNumClones = std.error(numClones)
+
+            )
+
+df <- data.frame(df)
+```
+
+
+```{r}
+# Without error bars
+ggp <- ggplot(data = dat)+
+  #geom_point(aes(x = pcnt, y = gini, group = ID, colour = as.factor(ID)), show.legend = F)+
+  geom_line(aes(x = pcnt, y = gini, group = ID, colour = as.factor(ID)), show.legend = F)+
+  scale_x_log10(breaks=c(0.1,10,20,30,40,50,60,70,80,90,100))+
+  scale_y_continuous(limits=c(0,1))+
+  geom_vline(xintercept=10)+
+  theme(legend.position="none")+
+  theme_classic()
+
+```
+
+```{r}
+# Without error bars
+ggp <- ggplot(data = dat)+
+  #geom_point(aes(x = pcnt, y = gini, group = ID, colour = as.factor(ID)), show.legend = F)+
+  geom_line(aes(x = pcnt, y = shannon, group = ID, colour = as.factor(ID)), show.legend = F)+
+  scale_x_log10(breaks=c(0.1,10,20,30,40,50,60,70,80,90,100))+
+  scale_y_continuous(limits=c(0,1))+
+  geom_vline(xintercept=10)+
+  theme(legend.position="none")+
+  theme_classic()
+
+```
+
+
+```{r}
+# With error bars
+ggp <- ggplot(data = df)+
+  geom_line(aes(x=df$pcnt, y=df$meanGini, group = df$ID))+
+  geom_errorbar(aes(ymin=df$meanGini-df$seGini, ymax=df$meanGini+df$seGini, x = df$pcnt), width=.1)+
+  #scale_x_continuous(breaks=c(0.1,10,20,30,40,50,60,70,80,90,100), trans = 'log2')+
+  scale_y_continuous(limits=c(0,1))+
+  geom_vline(xintercept=10)+
+  theme(legend.position="none")+
+  labs(x = 'Subsampled % of Sample Read Depth', y = 'Mean Gini Coefficient')+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'GiniPcnt', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+```
+
+
+```{r}
+# With error bars
+ggp <- ggplot(data = df)+
+  geom_line(aes(x=df$pcnt, y=df$meanShannon, group = df$ID))+
+  geom_errorbar(aes(ymin=df$meanShannon-df$seShannon, ymax=df$meanShannon+df$seShannon, x = df$pcnt), width=.1)+
+  #scale_x_continuous(breaks=c(0.1,10,20,30,40,50,60,70,80,90,100), trans = 'log2')+
+  #scale_y_continuous(limits=c(0,1))+
+  geom_vline(xintercept=10)+
+  theme(legend.position="none")+
+  labs(x = 'Subsampled % of Sample Read Depth', y = 'Mean Shannon Entropy')+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'ShannonPcnt', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+```
+
+
+
+```{r}
+#Form upper limit
+df$maxGini <- NA
+df$maxShannon <- NA
+df$maxNumClones <- NA
+
+for (i in unique(df$ID)){
+  df$maxGini[df$ID==i] <- max(df$meanGini[df$ID==i])
+  df$maxShannon[df$ID==i] <- max(df$meanShannon[df$ID==i])
+  df$maxNumClones[df$ID==i] <- max(df$meanNumClones[df$ID==i])
+}
+
+df$pcntGini <- (100/df$maxGini)*df$meanGini
+df$pcntShannon <- (100/df$maxShannon)*df$meanShannon
+df$pcntNumClones <- (100/df$maxNumClones)*df$meanNumClones
+```
+
+
+```{r}
+# Normalised to % of Gini coefficient at full read depth
+ggp <- ggplot(data = df)+
+  geom_line(aes(x=df$pcnt, y=df$pcntGini, group = df$ID))+
+  #geom_errorbar(aes(ymin=df$meanGini-df$seGini, ymax=df$meanGini+df$seGini, x = df$pcnt), width=.1)+
+  #scale_x_continuous(breaks=c(0.1,10,20,30,40,50,60,70,80,90,100), trans = 'log2')+
+  scale_y_continuous(limits=c(0,100))+
+  geom_vline(xintercept=10)+
+  theme(legend.position="none")+
+  labs(x = 'Subsampled % of Sample Read Depth', y = '% of Gini Coefficient of Raw Data')+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'GiniNormalised', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+```
+
+```{r}
+# Normalised to % of shannon entropy at full read depth
+ggp <- ggplot(data = df)+
+  geom_line(aes(x=df$pcnt, y=df$pcntShannon, group = df$ID))+
+  #geom_errorbar(aes(ymin=df$meanGini-df$seGini, ymax=df$meanGini+df$seGini, x = df$pcnt), width=.1)+
+  #scale_x_continuous(breaks=c(0.1,10,20,30,40,50,60,70,80,90,100), trans = 'log2')+
+  scale_y_continuous(limits=c(0,100))+
+  geom_vline(xintercept=10)+
+  theme(legend.position="none")+
+  labs(x = 'Subsampled % of Sample Read Depth', y = '% of Shannon Entropy of Raw Data')+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'ShannonNormalised', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+```
+
+
+```{r}
+# Raw Data
+ggp <- ggplot(data = df)+
+  geom_line(aes(x=df$numSeqs, y=df$meanGini, group = df$ID))+
+  scale_x_log10(labels = scales::comma, breaks = c(1,10,100,1000,10000,100000,500000))+
+  scale_y_continuous(limits=c(0,1))+
+  theme(legend.position="none")+
+  labs(x = 'Raw Subsampled Read Depth', y = 'Gini Coefficient')+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'GiniRaw', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+```
+
+
+```{r}
+# Raw Data
+ggp <- ggplot(data = df)+
+  geom_line(aes(x=df$numSeqs, y=df$meanShannon, group = df$ID))+
+  scale_x_log10(labels = scales::comma, breaks = c(1,10,100,1000,10000,100000,500000))+
+  #scale_y_continuous(limits=c(0,1))+
+  theme(legend.position="none")+
+  labs(x = 'Raw Subsampled Read Depth', y = 'Shannon Entropy')+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'ShannonRaw', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+```
+
+
+# Identifying the turning point of information loss
+
+```{r}
+#Lower limit
+# dy/dx <- abs rate of informtation loss.
+
+threshold <- 1.2 #dy/dx, where x <- 0,100
+df$turningPoint <- NA
+df$turningP <- NA
+df$dy20pcnt <- NA
+df$dy10pcnt <- NA
+df$dy5pcnt <- NA
+df$dy1pcnt <- NA
+df$dyChosen <- NA
+df$dyChosenminus1 <- NA
+
+store <- vector()
+for (i in unique(df$ID)){
+  temp <- df[df$ID==i,]
+
+  # find points where gradient > threshold
+  m <- match(diff(temp$pcntGini)[diff(temp$pcntGini)>threshold], diff(temp$pcntGini)) 
+  s <- split(m, cumsum(c(TRUE, diff(m) != 1))) #split into groups of continuous sequences
+  
+  store <- append(store, max(s[[which.max(sapply(s, length))]]))
+  
+  # take the point before where abs(dy/dx) > threshold
+  df$turningPoint[df$ID==i & df$pcnt==max(s[[which.max(sapply(s, length))]])+1] <- max(s[[which.max(sapply(s, length))]])+1 
+  
+  # take the point before where abs(dy/dx) > threshold
+  df$turningP[df$ID==i] <- max(s[[which.max(sapply(s, length))]])+1 
+  
+  df$dyChosen[df$ID==i & df$pcnt==max(s[[which.max(sapply(s, length))]])+1] <- abs(diff(temp$pcntGini))[max(s[[which.max(sapply(s, length))]])+1]
+  
+    df$dyChosenminus1[df$ID==i & df$pcnt==max(s[[which.max(sapply(s, length))]])] <- abs(diff(temp$pcntGini))[max(s[[which.max(sapply(s, length))]])]
+
+  df$dy20pcnt[df$ID==i & df$pcnt==20] <- abs(diff(temp$pcntGini))[21]
+  df$dy10pcnt[df$ID==i & df$pcnt==10] <- abs(diff(temp$pcntGini))[11]
+  df$dy5pcnt[df$ID==i & df$pcnt==5] <- abs(diff(temp$pcntGini))[6]
+  df$dy1pcnt[df$ID==i & df$pcnt==1] <- abs(diff(temp$pcntGini))[1]
+}
+```
+
+
+```{r}
+#Identify whether a sequence is above or below the curent threshold set for subsampling
+
+subSampleLimit <- 0.2
+
+df$abovebelow <- NA
+for (i in unique(df$ID)){
+  temp <- df[df$ID==i,]
+  if (max(temp$numSeqs)>=largest*subSampleLimit){
+    df$abovebelow[df$ID==i] <- 'a'
+  }
+  if (max(temp$numSeqs)<largest*subSampleLimit){
+    df$abovebelow[df$ID==i] <- 'b'
+  }
+}
+```
+
+
+```{r}
+# Normalised to % of Gini coefficient at full read depth - x's indicate turning points
+ggp <- ggplot(data = df)+
+  geom_line(aes(x=df$pcnt, y=df$pcntGini, group = df$ID))+
+  geom_point(aes(y=df$pcntGini, x=df$turningPoint), shape=4, colour='red')+
+  scale_y_continuous(limits=c(0,100))+
+  geom_vline(xintercept=5)+
+  geom_vline(xintercept=20)+
+  theme(legend.position="none")+
+  labs(x = 'Subsampled % of Sample Read Depth', y = '% of Starting Gini Coefficient')+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'GiniNormalisedTurningPoints', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+```
+
+
+```{r}
+# Raw gini - x's indicate turning points
+ggp <- ggplot(data = df)+
+  geom_line(aes(x=df$pcnt, y=df$meanGini, group = df$ID))+
+  geom_point(aes(y=df$meanGini, x=df$turningPoint), shape=4, colour='red')+
+  geom_vline(xintercept=5)+
+  geom_vline(xintercept=20)+
+  theme(legend.position="none")+
+  labs(x = 'Subsampled % of Sample Read Depth', y = 'Raw Gini Coefficient')+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'GiniRawTurningPoints', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+```
+
+```{r}
+ggp <- ggplot(data = df)+
+  geom_line(aes(turningPoint), stat='density')+
+  labs(x = '% Subsampled Before Reaching Turning Point', y = 'Density')+
+  geom_vline(xintercept=5)+
+  geom_vline(xintercept=20)+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'DensityTurningPoints', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+```
+
+```{r}
+df$turningSeqs <- NA
+df$maxSeqs <- NA
+
+for (i in unique(df$ID)){
+  temp <- df[df$ID==i,]
+  maxSeqs <- temp$numSeqs[temp$pcnt==100]
+  df$maxSeqs[df$ID==i] <- maxSeqs
+}
+
+df$turningSeqs <- (df$maxSeqs/100)*df$turningPoint
+
+```
+
+
+```{r}
+# Raw Data
+ggp <- ggplot(data = df)+
+  geom_line(aes(x=df$numSeqs, y=df$meanGini, group = df$ID))+
+  geom_point(aes(y=df$meanGini, x=df$turningSeqs), shape=4, colour='red')+
+  scale_x_log10(labels = scales::comma, breaks = c(1,10,100,1000,10000,100000,500000))+
+  scale_y_continuous(limits=c(0,1))+
+  theme(legend.position="none")+
+  labs(x = 'Raw Subsampled Read Depth', y = 'Gini Coefficient')+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'GiniRaw', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+```
+
+```{r}
+# Raw Data
+ggp <- ggplot(data = df)+
+  geom_line(aes(x=df$numSeqs, y=df$meanGini, group = df$ID))+
+  geom_point(aes(y=df$meanGini, x=df$turningSeqs), shape=4, colour='red')+
+  #scale_x_log10(labels = scales::comma, breaks = c(1,10,100,1000,10000,100000,500000))+
+  scale_y_continuous(limits=c(0,1))+
+  theme(legend.position="none")+
+  labs(x = 'Raw Subsampled Read Depth', y = 'Gini Coefficient')+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'GiniRawNoLog', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+```
+
+```{r}
+df2 <- df[df$pcnt==100,]
+
+df2$turningSeqs <- (df2$numSeqs/100)*df2$turningP
+```
+
+```{r}
+ggp <- ggplot(data=df2)+
+  geom_point(aes(y=ID, x=numSeqs))+
+  geom_point(aes(y=ID, x=turningSeqs))
+```
+
+
+
+```{r}
+ # subsamplingDepth <- vector()
+ # counters <- vector()
+ # min <- vector()
+ # max <- vector()
+ # 
+ # absMax <- max(as.integer(df2$numSeqs))
+ # absMin <- min(as.integer(df2$turningSeqs))
+ # 
+ # absRange <- seq(absMin, absMax, 10)
+ # 
+ # for (i in absRange){
+ #   counter <- 0
+ #   
+ #   for (j in df2$ID){
+ #     temp <- df2[df2$ID==j,]
+ #     
+ #     tempMin <- temp$turningSeqs
+ #     tempMax <- temp$numSeqs
+ #     
+ #     if (tempMax >= i & tempMin <= i){
+ #       counter <- counter + 1
+ #     }
+ #   }
+ #   counters <- append(counters, counter)
+ #   subsamplingDepth <- append(subsamplingDepth, i)
+ #   min <- append(min, currMin)
+ #   max <- append(max, currMax)
+ # }
+ # 
+ # subsamplingDat <- data.frame(subsamplingDepth, counters, min, max)
+```
+
+```{r}
+ # setwd(outputPath)
+ # 
+ # write.table(subsamplingDat, 'subsamplingDepth.csv', row.names = F, sep = ',')
+```
+
+```{r}
+setwd(outputPath)
+
+subsamplingDat <- read.csv('subsamplingDepth.csv', header = T, stringsAsFactors = F)
+```
+
+
+```{r}
+#10232 or 10232
+
+# subsamplingDepth <- vector()
+# counters <- vector()
+# min <- vector()
+# max <- vector()
+# 
+#   
+# for (j in df2$ID){
+#   temp <- df2[df2$ID==j,]
+#   
+#   tempMin <- temp$turningSeqs
+#   tempMax <- temp$numSeqs
+#   
+#   if (tempMax >= 10232 & tempMin <= 10232){
+#     counter <- j
+#     counters <- append(counters, counter)
+# 
+#   }
+# }
+# subsamplingDepth <- append(subsamplingDepth, i)
+# min <- append(min, currMin)
+# max <- append(max, currMax)
+```
+
+
+```{r}
+inputPath <- '/home/ben/Desktop/CBTSubsampleAnalysisPipeline23Nov17/CBTSubSampleOct17/Input'
+outputPath <- '/home/ben/Desktop/CBTSubsampleAnalysisPipeline23Nov17/CBTSubSampleOct17/Output'
+```
+
+
+```{r}
+# setwd(inputPath)
+# 
+# samplingLevel <- 10232
+# 
+# #subsample all files, in-turn to smallest TCR
+# 
+# for (file in counters){
+#   #expand cdr3 by frequency
+#   tempFile <- read.csv(file, header = F, stringsAsFactors = F)
+#   tempFile.expanded <- tempFile[rep(row.names(tempFile), tempFile$V2),]
+#   
+#   #generate sequence of numbers, 1: length of expanded file
+#   tempLen <- length(tempFile.expanded$V1)
+#   samplePool <- seq(1:tempLen)
+# 
+#   #sample from numerical sequence, without replacement
+#   index <- sample(samplePool, samplingLevel, replace = F)
+#   
+#   #use sampled vector of integers to access expanded dataframe, taking at vector of indexes
+#   subsampled <- tempFile.expanded[[1]][index]
+#   
+#   #collapse back into traditional .cdr3 freq format
+#   subsampled.collapsed <- as.data.frame(table(subsampled))
+#   colnames(subsampled.collapsed) <- c('Seq', 'Freq')
+#   
+#   #write as output file in output folder
+#   write.table(subsampled.collapsed, paste(outputPath, '/', file, 'subsample', '.csv', sep = ''), row.names = F, col.names = T, sep = ',')
+# }
+```
+
+
+```{r}
+outputPath <- '/home/ben/Desktop/CBTSubsampleAnalysisPipeline23Nov17/CBTSubSampleOct17/SubsampleTestOutput'
+```
+
+
+```{r}
+ggp <- ggplot(data=df)+
+  geom_line(aes(dyChosen, colour='Algorithm'), stat = 'density')+
+  geom_line(aes(dyChosenminus1, colour='Algorithm - 1%'), stat = 'density')+
+  theme_classic()+
+  labs(y = 'Density', x = expression('dy/dx'))
+
+ggsave(paste(outputPath, '/', 'algorithmDy', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+
+```
+
+```{r}
+ggp <- ggplot(data=df)+
+  geom_line(aes(dyChosen, colour = 'Algorithm'), stat = 'density')+
+  geom_line(aes(dy1pcnt, colour = '1%'), stat = 'density')+
+  geom_line(aes(dy5pcnt, colour = '5%'), stat = 'density')+
+  geom_line(aes(dy10pcnt, colour = '10%'), stat = 'density')+
+  geom_line(aes(dy20pcnt, colour = '20%'), stat = 'density')+
+  theme_classic()+
+  labs(y = 'Density', x = expression('dy/dx'))
+
+ggsave(paste(outputPath, '/', 'cutoffsvsalgo', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+
+
+```
+
+
+```{r}
+ggp <- ggplot(data = df)+
+    geom_line(aes(x=df$pcnt, y=df$meanShannon, group = df$ID))+
+    geom_point(aes(y=df$meanShannon, x=df$turningPoint), shape=4, colour='red')+
+    #scale_x_log10(labels = scales::comma, breaks = c(1,10,100,1000,10000,100000,500000))+
+    #scale_y_continuous(limits=c(0,100))+
+    theme(legend.position="none")+
+    geom_vline(xintercept=5)+
+    geom_vline(xintercept=20)+
+    labs(x = 'Subsampled % of Sample Read Depth', y = '% of Starting Shannon Entropy')+
+    theme_classic()
+
+#ggsave(paste(outputPath, '/', 'pcntShannon', '.pdf', sep = ''), 
+#       ggp, width = 14, height = 10, units = c('cm'))
+
+```
+
+```{r}
+# Number of clonotypes-
+
+ggp <- ggplot(data = df)+
+    geom_line(aes(x=df$pcnt, y=df$pcntNumClones, group = df$ID))+
+    geom_point(aes(y=df$pcntNumClones, x=df$turningPoint), shape=4, colour='red')+
+    #scale_x_log10(labels = scales::comma, breaks = c(1,10,100,1000,10000,100000,500000))+
+    #scale_y_continuous(limits=c(0,1))+
+    theme(legend.position="none")+
+    labs(x = 'Subsampled % of Sample Read Depth', y = '% of Total Number of Clonotypes')+
+    theme_classic()
+
+ggsave(paste(outputPath, '/', 'pcntClonotypes', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+
+```
+
+
+```{r}
+# Stats test - number of clonotypes
+```
+
+
+```{r}
+# minimum sampling depth
+
+ setwd(inputPath)
+ 
+ reps <- 30 # number of repeated resamplings
+ 
+ ID <- vector()
+ pcnt <- vector()
+ numSeqs <- vector()
+ gini <- vector()
+ shannon <- vector()
+ numClones <- vector()
+ 
+ count <- 0
+ 
+ for (file in files){
+   
+   print((100/length(files))*count)
+   
+   tempFile <- read.csv(file, header = F, stringsAsFactors = F)
+   tempFile.expanded <- tempFile[rep(row.names(tempFile), tempFile$V2),]
+   
+   for (i in c(0.3)){
+     
+     # current percentage
+     currPcnt <- i/100
+     
+     for (j in seq(1,reps)){
+     
+       # generate sequence of numbers, 1: length of expanded file
+       tempLen <- length(tempFile.expanded$V1)
+       samplePool <- seq(1:tempLen)
+       
+       # sample from numerical sequence, without replacement
+       index <- sample(samplePool, as.integer(sum(tempLen*currPcnt)), replace = F)
+       #  index <- sample(samplePool, smallest, replace = F)
+   
+       
+       # use sampled vector of integers to access expanded dataframe, taking at vector of indexes
+       subsampled <- tempFile.expanded[[1]][index]
+
+       # collapse back into traditional .cdr3 freq format
+       subsampled.collapsed <- as.data.frame(table(subsampled))
+       colnames(subsampled.collapsed) <- c('Seq', 'Freq')
+       
+       ID <- append(ID, file)
+       pcnt <- append(pcnt, i)
+       numSeqs <- append(numSeqs, sum(subsampled.collapsed$Freq))
+       gini <- append(gini, ineq(subsampled.collapsed$Freq))
+       shannon <- append(shannon, diversity(subsampled.collapsed$Freq, index = 'shannon', base = 2))
+       numClones <- append(numClones, length(subsampled.collapsed$Seq))
+       
+     }
+     
+   }
+   count <- count+1
+ 
+}
+ 
+dat.min <- data.frame(ID, pcnt, numSeqs, gini, shannon, numClones)
+names(dat.min) <- c('ID', 'pcnt', 'numSeqs', 'gini', 'shannon', 'numClones')
+
+```
+
+
+```{r}
+df.min <- dat.min %>% 
+  group_by(ID, pcnt, numSeqs) %>% 
+  summarise(meanGini = mean(gini),
+            sdGini = sd(gini),
+            seGini = std.error(gini),
+            meanShannon = mean(shannon),
+            sdShannon = sd(shannon),
+            seShannon = std.error(shannon),
+            meanNumSeqs = mean(numSeqs),
+            sdNumSeqs = sd(numSeqs),
+            seNumSeqs = std.error(numSeqs),
+            meanNumClones = mean(numClones),
+            sdNumClones = sd(numClones),
+            seNumClones = std.error(numClones)
+
+            )
+
+df.min <- data.frame(df.min)
+```
+
+
+```{r}
+# Algo efficiency... plot 1
+
+#minimum sampling depth, 10%, 20%, 50%, algorithm selected, max
+
+tempY <- c(rep(0,length(df$meanGini[df$pcnt==1])), df.min$meanGini, df$meanGini[df$pcnt==1], df$meanGini[is.na(df$turningSeqs)==F], df$meanGini[df$pcnt==10], df$meanGini[df$pcnt==20], df$meanGini[df$pcnt==50],  df$meanGini[df$pcnt==100])
+
+tempX <- c(rep(0,length(df$meanGini[df$pcnt==1])), rep(1,length(df$meanGini[df$pcnt==1])), rep(2,length(df$meanGini[df$pcnt==1])), rep(3,length(df$meanGini[df$pcnt==1])), rep(4,length(df$meanGini[df$pcnt==1])), rep(5,length(df$meanGini[df$pcnt==1])), rep(6,length(df$meanGini[df$pcnt==1])), rep(7,length(df$meanGini[df$pcnt==1])))
+
+IDs <- c(df$ID[df$pcnt==1], df.min$ID, df$ID[df$pcnt==1], df$ID[df$pcnt==10], df$ID[df$pcnt==20], df$ID[df$pcnt==50], df$ID[is.na(df$turningSeqs)==F], df$ID[df$pcnt==100])
+
+#===============
+tempX1 <- c(rep(4,length(df$meanGini[df$pcnt==1])), rep(5,length(df$meanGini[df$pcnt==1])), rep(6,length(df$meanGini[df$pcnt==1])), rep(7,length(df$meanGini[df$pcnt==1])))
+
+tempY1 <- c(df$meanGini[df$pcnt==10], df$meanGini[df$pcnt==20], df$meanGini[df$pcnt==50],  df$meanGini[df$pcnt==100])
+
+IDs1 <- c(df$ID[df$pcnt==20], df$ID[df$pcnt==50], df$ID[is.na(df$turningSeqs)==F], df$ID[df$pcnt==100])
+#===============
+tempX2 <- c(rep(3,length(df$meanGini[df$pcnt==1])), rep(4,length(df$meanGini[df$pcnt==1])))
+
+tempY2 <- c(df$meanGini[is.na(df$turningSeqs)==F], df$meanGini[df$pcnt==10])
+
+IDs2 <- c(df$ID[df$pcnt==1], df$ID[df$pcnt==10])
+
+#===============
+tempX3 <- c(rep(0,length(df$meanGini[df$pcnt==1])), rep(1,length(df$meanGini[df$pcnt==1])), rep(2,length(df$meanGini[df$pcnt==1])), rep(3,length(df$meanGini[df$pcnt==1])))
+
+tempY3 <- c(rep(0,length(df$meanGini[df$pcnt==1])), df.min$meanGini, df$meanGini[df$pcnt==1], df$meanGini[is.na(df$turningSeqs)==F])
+
+IDs3 <- c(df$ID[df$pcnt==1], as.character(df.min$ID), df$ID[df$pcnt==1], df$ID[df$pcnt==10])
+#===============
+
+ggp <- ggplot()+
+  geom_point(aes(x = tempX, y = tempY, group = IDs))+
+  geom_line(aes(x = tempX1, y = tempY1, group = IDs1))+
+  geom_line(aes(x = tempX2, y = tempY2, group = IDs2), linetype = 6)+
+  geom_line(aes(x = tempX3, y = tempY3, group = IDs3), linetype = 1)+
+  scale_x_continuous(breaks = c(0,1,2,3,4,5,6,7), labels = c('Single Sequence','0.3%','1%', 'Algorithm (Min. 3%)', '10%', '20%', '50%', '100%'))+
+  labs(y = 'Raw Gini Coefficient', x = 'Normalised Subsampling Depth')+
+  theme_classic()
+
+ggsave(paste(outputPath, '/', 'algocomparison', '.pdf', sep = ''), 
+       ggp, width = 18, height = 10, units = c('cm'))
+```
+
+
+
+```{r}
+# Algo efficiency... plot 2 (not very good)
+
+#minimum sampling depth, 10%, 20%, 50%, algorithm selected, max
+
+tempY <- c(df$meanGini[df$pcnt==1], df$meanGini[is.na(df$turningSeqs)==F], df$meanGini[df$pcnt==10], df$meanGini[df$pcnt==20], df$meanGini[df$pcnt==50],  df$meanGini[df$pcnt==100])
+
+tempX <- c(rep(1,length(df$meanGini[df$pcnt==1])), na.omit(df$turningPoint), rep(10,length(df$meanGini[df$pcnt==1])), rep(20,length(df$meanGini[df$pcnt==1])), rep(50,length(df$meanGini[df$pcnt==1])), rep(100,length(df$meanGini[df$pcnt==1])))
+
+IDs <- c(df$ID[df$pcnt==1], df$ID[df$pcnt==10], df$ID[df$pcnt==20], df$ID[df$pcnt==50], df$ID[is.na(df$turningSeqs)==F], df$ID[df$pcnt==100])
+
+#===============
+tempX1 <- c(rep(10,length(df$meanGini[df$pcnt==1])), rep(20,length(df$meanGini[df$pcnt==1])), rep(50,length(df$meanGini[df$pcnt==1])), rep(100,length(df$meanGini[df$pcnt==1])))
+
+tempY1 <- c(df$meanGini[df$pcnt==10], df$meanGini[df$pcnt==20], df$meanGini[df$pcnt==50],  df$meanGini[df$pcnt==100])
+
+IDs1 <- c(df$ID[df$pcnt==20], df$ID[df$pcnt==50], df$ID[is.na(df$turningSeqs)==F], df$ID[df$pcnt==100])
+#===============
+tempX2 <- c(na.omit(df$turningPoint), rep(10,length(df$meanGini[df$pcnt==1])))
+
+tempY2 <- c(df$meanGini[is.na(df$turningSeqs)==F], df$meanGini[df$pcnt==10])
+
+IDs2 <- c(df$ID[df$pcnt==1], df$ID[df$pcnt==10])
+
+#===============
+tempX3 <- c(rep(1,length(df$meanGini[df$pcnt==1])), na.omit(df$turningPoint))
+
+tempY3 <- c(df$meanGini[df$pcnt==1], df$meanGini[is.na(df$turningSeqs)==F])
+
+IDs3 <- c(df$ID[df$pcnt==1], df$ID[df$pcnt==10])
+#===============
+
+ggp <- ggplot()+
+  geom_point(aes(x = tempX, y = tempY, group = IDs))+
+  geom_line(aes(x = tempX1, y = tempY1, group = IDs1))+
+  geom_line(aes(x = tempX2, y = tempY2, group = IDs2), linetype = 6)+
+  geom_line(aes(x = tempX3, y = tempY3, group = IDs3), linetype = 1)+
+  scale_x_log10(breaks = c(1,2,3,4,5,6), labels = c('1%', 'Algorithm', '10%', '20%', '50%', '100%'))+
+  labs(y = 'Raw Gini Coefficient', x = 'Normalised Subsampling Depth')+
+  theme_classic()
+```
+
+
+```{r}
+# Algo efficiency... plot 3 (also not very good)
+
+#minimum sampling depth, 10%, 20%, 50%, algorithm selected, max
+
+tempY <- c(df$meanGini[df$pcnt==1], df$meanGini[is.na(df$turningSeqs)==F], df$meanGini[df$pcnt==20], df$meanGini[df$pcnt==50],  df$meanGini[df$pcnt==100])
+
+tempX <- c(rep(1,length(df$meanGini[df$pcnt==1])), rep(2,length(df$meanGini[df$pcnt==1])), rep(4,length(df$meanGini[df$pcnt==1])), rep(5,length(df$meanGini[df$pcnt==1])), rep(6,length(df$meanGini[df$pcnt==1])))
+
+IDs <- c(df$ID[df$pcnt==1], df$ID[df$pcnt==20], df$ID[df$pcnt==50], df$ID[is.na(df$turningSeqs)==F], df$ID[df$pcnt==100])
+
+#===============
+tempX1 <- c(rep(4,length(df$meanGini[df$pcnt==1])), rep(5,length(df$meanGini[df$pcnt==1])), rep(6,length(df$meanGini[df$pcnt==1])))
+
+tempY1 <- c(df$meanGini[df$pcnt==20], df$meanGini[df$pcnt==50],  df$meanGini[df$pcnt==100])
+
+IDs1 <- c(df$ID[df$pcnt==50], df$ID[is.na(df$turningSeqs)==F], df$ID[df$pcnt==100])
+#===============
+tempX2 <- c(rep(2,length(df$meanGini[df$pcnt==1])), rep(4,length(df$meanGini[df$pcnt==1])))
+
+tempY2 <- c(df$meanGini[is.na(df$turningSeqs)==F], df$meanGini[df$pcnt==20])
+
+IDs2 <- c(df$ID[df$pcnt==1], df$ID[df$pcnt==20])
+
+#===============
+tempX3 <- c(rep(1,length(df$meanGini[df$pcnt==1])), rep(2,length(df$meanGini[df$pcnt==1])))
+
+tempY3 <- c(df$meanGini[df$pcnt==1], df$meanGini[is.na(df$turningSeqs)==F])
+
+IDs3 <- c(df$ID[df$pcnt==1], df$ID[df$pcnt==10])
+#===============
+
+ggp <- ggplot()+
+  geom_point(aes(x = tempX, y = tempY, group = IDs))+
+  geom_line(aes(x = tempX1, y = tempY1, group = IDs1))+
+  geom_line(aes(x = tempX2, y = tempY2, group = IDs2), linetype = 6)+
+  geom_line(aes(x = tempX3, y = tempY3, group = IDs3), linetype = 1)+
+  scale_x_continuous(breaks = c(1,2,3,4,5,6), labels = c('1%', 'Algorithm', '~10% (+/- 8%)', '20%', '50%', '100%'))+
+  labs(y = 'Raw Gini Coefficient', x = 'Normalised Subsampling Depth')+
+  theme_classic()
+```
+
+
+```{r}
+# THIS ONE
+
+#Sort in increasing order
+gini.dat <- tempFile[order(tempFile$V2),]
+gini.dat <- gini.dat[-1]
+
+#Order statistics
+gini.dat$orderStat <- 1:nrow(gini.dat)
+
+#Parameters
+muhat <- mean(gini.dat$V2)
+n <- max(gini.dat$orderStat)
+yi <- gini.dat$V2 # unique or not?
+i <- gini.dat$orderStat # unique or not?
+
+#Gini estimator comparison with ineq package
+ghat <- (2/(muhat*n^2)*sum(yi*(i-0.5))-1) #  WORKS NOW
+print(ghat)
+print(ineq(gini.dat$V2, type = 'Gini'))
+
+
+#Series wi and vi
+wi <- (((2*i)-1)*yi)/(2*n)
+visum <- vector()
+for (val in i){
+  tempSum <- sum(gini.dat$V2[gini.dat$orderStat<=val])
+  visum <- append(visum, tempSum)
+}
+vi <- (n^-1)*visum
+Ihat <- mean(wi)
+
+#Bias corrected Gini estimator
+Gtilde <- n*(2*Ihat/muhat-1)/(n-1)
+print(Gtilde)
+
+Zhati <- -(Gtilde + 1)*yi + 2*(wi - vi)
+Zbar <- mean(Zhati)
+
+#Derive asymptotic standard error of bias corrected Gini estimator
+VarhatG <- (1/(n*muhat)^2) * sum((Zhati - Zbar)^2) #asymptotic variance
+SEhatG <- sqrt(VarhatG) #asymptotic standard error
+
+#Test statistic
+tau <- (Gtilde-Gtilde+0.1)/sqrt(SEhatG^2+SEhatG^2) 
+
+###############Bootstrap:###############
+#tau <- (Gtilde - G0)/SEhatG
+
+#HYPOTHESIS:
+# sample G2hat is from G1hat
+
+#resample with replacement from observed sample to size n
+
+#for bootstrap sample j, compute tauj^*, but replace G0 with Ghat
+
+#bootstrap p value is the proportion of the tauj* more extreme then tau. For significance level alpha, reject if the bootstrap P value is less than alpha
+
+#FOR SAMPLE COMPARISON.... assumes indenpendence which above does not
+
+#Tau = (Ghat1 - Ghat2)/sqrt(SEG1^2 + SEG2^2)
+#Is tested against extreme values of
+#Tauj* = (G1* - G2* - Ghat1 + Ghat2)/sqrt((SEG1*)^2 + (SEG2*)^2)
+
+
+#proportion of tauj* values more extreme than tau -> p value
+
+#for significance level alpha, rejection occurs if bootstrap p value < alpha
+```
+
+```{r}
+#example bootstrap using the same sample (should accept the null)
+setwd(inputPath)
+
+gini.dat1.master <- read.csv(files[30], stringsAsFactors = F, header = F)
+gini.dat2.master <- read.csv(files[110], stringsAsFactors = F, header = F)
+
+#gini.dat1.master <- read.csv('dcr_beta_AmAlF3-b.cdr3.gz', stringsAsFactors = F, header = F)
+#gini.dat2.master <- read.csv('dcr_alpha_CBF1000-a.cdr3.gz', stringsAsFactors = F, header = F)
+
+gini.dat1.master <- gini.dat1.master[order(gini.dat1.master$V2),]
+gini.dat2.master <- gini.dat2.master[order(gini.dat2.master$V2),]
+
+#Sort in increasing order
+#gini.dat1 <- tempFile[order(tempFile$V2),]
+gini.dat1 <- gini.dat1.master[-1]
+#gini.dat2 <- tempFile[order(tempFile$V2),]
+gini.dat2 <- gini.dat2.master[-1]
+
+
+#Order statistics
+gini.dat1$orderStat <- 1:nrow(gini.dat1)
+gini.dat2$orderStat <- 1:nrow(gini.dat2)
+
+
+#Parameters
+muhat1 <- mean(gini.dat1$V2)
+n1 <- max(gini.dat1$orderStat)
+yi1 <- gini.dat1$V2 # unique or not?
+i1 <- gini.dat1$orderStat # unique or not?
+muhat2 <- mean(gini.dat2$V2)
+n2 <- max(gini.dat2$orderStat)
+yi2 <- gini.dat2$V2 # unique or not?
+i2 <- gini.dat2$orderStat # unique or not?
+
+
+#Gini estimator comparison with ineq package
+ghat1 <- (2/(muhat1*n1^2)*sum(yi1*(i1-0.5))-1)
+ghat2 <- (2/(muhat2*n2^2)*sum(yi2*(i2-0.5))-1)
+
+
+#Series wi and vi
+wi1 <- (((2*i1)-1)*yi1)/(2*n1)
+visum1 <- vector()
+for (val1 in i1){
+  tempSum1 <- sum(gini.dat1$V2[gini.dat1$orderStat<=val1])
+  visum1 <- append(visum1, tempSum1)
+}
+vi1 <- (n1^-1)*visum1
+Ihat1 <- mean(wi1)
+
+wi2 <- (((2*i2)-1)*yi2)/(2*n2)
+visum2 <- vector()
+for (val2 in i2){
+  tempSum2 <- sum(gini.dat2$V2[gini.dat2$orderStat<=val2])
+  visum2 <- append(visum2, tempSum2)
+}
+vi2 <- (n2^-1)*visum2
+Ihat2 <- mean(wi2)
+
+
+#Bias corrected Gini estimator
+Gtilde1 <- n1*(2*Ihat1/muhat1-1)/(n1-1)
+Gtilde2 <- n2*(2*Ihat2/muhat2-1)/(n2-1)
+
+
+Zhati1 <- -(Gtilde1 + 1)*yi1 + 2*(wi1 - vi1)
+Zbar1 <- mean(Zhati1)
+Zhati2 <- -(Gtilde2 + 1)*yi2 + 2*(wi2 - vi2)
+Zbar2 <- mean(Zhati2)
+
+
+#Derive asymptotic standard error of bias corrected Gini estimator
+VarhatG1 <- (1/(n1*muhat1)^2) * sum((Zhati1 - Zbar1)^2) #asymptotic variance
+SEhatG1 <- sqrt(VarhatG1) #asymptotic standard error
+VarhatG2 <- (1/(n2*muhat2)^2) * sum((Zhati2 - Zbar2)^2) #asymptotic variance
+SEhatG2 <- sqrt(VarhatG2) #asymptotic standard error
+
+#FOR SAMPLE COMPARISON....
+Tau = (Gtilde1 - Gtilde2)/sqrt(SEhatG1^2 + SEhatG2^2) #test statistic
+
+
+
+#Bootstrap
+reps <- 100 #number of iterations
+Tjs <- vector()
+
+for (i in 1:reps){
+  #gini.dat1star <- tempFile[order(tempFile$V2),]
+  #gini.dat2star <- tempFile[order(tempFile$V2),]
+  #gini.dat1star <- read.csv(files[10], stringsAsFactors = F, header = F)
+  #gini.dat2star <- read.csv(files[100], stringsAsFactors = F, header = F)
+  gini.dat1star <- gini.dat1.master
+  gini.dat2star <- gini.dat2.master
+  
+  #randomly subsample with replcament
+  gini.dat1star <- gini.dat1star[sample(length(gini.dat1star$V1), length(gini.dat1star$V1), replace = T),]
+  gini.dat2star <- gini.dat2star[sample(length(gini.dat2star$V1), length(gini.dat2star$V1), replace = T),]
+  
+  gini.dat1star <- gini.dat1star[order(gini.dat1star$V2),]
+  gini.dat2star <- gini.dat2star[order(gini.dat2star$V2),]
+  
+  #Order statistics
+  gini.dat1star$orderStat <- 1:nrow(gini.dat1star)
+  gini.dat2star$orderStat <- 1:nrow(gini.dat2star)
+  
+  
+  gini.dat1star <- gini.dat1star[-1]
+  gini.dat2star <- gini.dat2star[-1]
+
+  
+  #Parameters
+  muhat1star <- mean(gini.dat1star$V2)
+  n1star <- max(gini.dat1star$orderStat)
+  yi1star <- gini.dat1star$V2 # unique or not?
+  i1star <- gini.dat1star$orderStat # unique or not?
+  muhat2star <- mean(gini.dat2star$V2)
+  n2star <- max(gini.dat2star$orderStat)
+  yi2star <- gini.dat2star$V2 # unique or not?
+  i2star <- gini.dat2star$orderStat # unique or not?
+  
+  #Gini estimator comparison with ineq package
+  ghat1star <- (2/(muhat1star*n1star^2)*sum(yi1star*(i1star-0.5))-1)
+  ghat2star <- (2/(muhat2star*n2star^2)*sum(yi2star*(i2star-0.5))-1)
+
+  
+  #Series wi and vi
+  wi1star <- (((2*i1star)-1)*yi1star)/(2*n1star)
+  visum1star <- vector()
+  for (val1star in i1star){
+    tempSum1star <- sum(gini.dat1star$V2[gini.dat1star$orderStat<=val1star])
+    visum1star <- append(visum1star, tempSum1star)
+  }
+  vi1star <- (n1star^-1)*visum1star
+  Ihat1star <- mean(wi1star)
+  
+  wi2star <- (((2*i2star)-1)*yi2star)/(2*n2star)
+  visum2star <- vector()
+  for (val2star in i2star){
+    tempSum2star <- sum(gini.dat2star$V2[gini.dat2star$orderStat<=val2star])
+    visum2star <- append(visum2star, tempSum2star)
+  }
+  vi2star <- (n2star^-1)*visum2star
+  Ihat2star <- mean(wi2star)
+  
+  
+  #Bias corrected Gini estimator
+  Gtilde1star <- n1star*(2*Ihat1star/muhat1star-1)/(n1star-1)
+  Gtilde2star <- n2star*(2*Ihat2star/muhat2star-1)/(n2star-1)
+
+  
+  Zhati1star <- -(Gtilde1star + 1)*yi1star + 2*(wi1star - vi1star)
+  Zbar1star <- mean(Zhati1star)
+  Zhati2star <- -(Gtilde2star + 1)*yi2star + 2*(wi2star - vi2star)
+  Zbar2star <- mean(Zhati2star)
+
+
+  #Derive asymptotic standard error of bias corrected Gini estimator
+  VarhatG1star <- (1/(n1star*muhat1star)^2) * sum((Zhati1star - Zbar1star)^2) #asymptotic variance
+  SEhatG1star <- sqrt(VarhatG1star) #asymptotic standard error
+  VarhatG2star <- (1/(n2star*muhat2star)^2) * sum((Zhati2star - Zbar2star)^2) #asymptotic variance
+  SEhatG2star <- sqrt(VarhatG2star) #asymptotic standard error
+  
+  #FOR SAMPLE COMPARISON....
+  Taustar = (Gtilde1star - Gtilde2star - Gtilde1 + Gtilde2)/sqrt(SEhatG1star^2 + SEhatG2star^2) #test statistic
+
+  Tjs <- append(Tjs, Taustar)
+}
+
+print(length(Tjs[Tjs>Tau]))
+
+
+```
+
+```{r}
+#visualise matrices as a heat map?
+```
+

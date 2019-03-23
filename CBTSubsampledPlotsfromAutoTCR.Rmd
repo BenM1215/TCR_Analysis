@@ -1,0 +1,1393 @@
+---
+title: "AutoTCR"
+author: "Ben Margetts and Athina"
+date: "31/10/2017"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+#Edit this section:
+
+```{r}
+#Run ID - what would you like to call this run?
+runID <- 'CBTSubsampledPlotsfromAutoTCR'
+
+#Email address to send the run report to
+emailAddress <- 'ucbpmar@ucl.ac.uk'
+sendEmail <- TRUE #TRUE or FALSE
+
+#Contains all data files
+inputPath <- '~/Desktop/CBTSubsampleAnalysisPipeline30Oct17/CBTSubSampleOct17/Input'
+
+#Path to write output to
+outputPath <- '~/Desktop/CBTSubsampleAnalysisPipeline30Oct17/CBTSubSampleOct17/Output'
+
+#Contains all decombinator scripts and this .Rmd script
+scriptPath <- '~/Desktop/CBTSubsampleAnalysisPipeline30Oct17/CBTSubSampleOct17/Scripts'
+
+#Contains a python installation with all prerequisite decombinator packages installed
+python <- '~/anaconda2/bin/python'
+
+#alpha and beta, or just 1?
+numberChains <- 2
+
+#Set to TRUE to run collapsinator with -N, otherwise, set to false.
+collapsinatorN <- TRUE #TRUE or FALSE
+```
+
+
+# Required Packages
+
+Load in the following packages:
+
+```{r results='hide', message=FALSE, warning=FALSE}
+#devtools::install_github("slowkow/ggrepel")
+library(data.table)
+library(zoo)
+library(plyr)
+library(scales)
+library(ggplot2)
+library(ggthemes)
+library(dplyr)
+library(plotly)
+library(pracma)
+library(Hmisc)
+library(rpart)
+library(survminer)
+library(knitr)
+library(mailR)
+library(grid)
+library(stringr)
+library(ggrepel)
+library(ggjoy)
+library(RColorBrewer)
+library(stringdist)
+library(ape)
+library(dendextend)
+library(reshape2)
+library(gplots)
+library(ineq)
+library(vegan)
+```
+
+
+#Function definitions
+Define the following functions for later use in the script.
+
+First, a ‘Not in’ function definition, the opposite of the %in% function.
+```{r}
+'%!in%' <- function(x,y)!('%in%'(x,y))
+```
+
+Next, a multiplot function to produce ggplot grid plots.
+```{r}
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  require(grid)
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+
+#Set the TCR data folder & the name of the info file:
+```{r}
+exitRead <- 'Failed'
+exitRead.time <- proc.time()
+
+
+#Raw files given to Decombinator - adjust searches/file names as necessary 
+#- EXPECTS TO RETURN 1 FILE PER SEARCH
+#- No spaces allowed in file path
+
+fastQFileR1 <- list.files(path=inputPath, pattern="*R1_001.fastq", full.names=T, recursive=FALSE)
+fastQFileR2 <- list.files(path=inputPath, pattern="*R2_001.fastq", full.names=T, recursive=FALSE)
+fastQFileI1 <- list.files(path=inputPath, pattern="*I1_001.fastq", full.names=T, recursive=FALSE)
+
+indexFileName <- list.files(path=inputPath, pattern="*index.csv", full.names=T, recursive=FALSE)
+infoFileName <- list.files(path=inputPath, pattern="*info.csv", full.names=T, recursive=FALSE)
+
+#Read in the info file
+infoFile <- read.csv(infoFileName, header = T, stringsAsFactors = F)
+indexFile <- read.csv(indexFileName, header = F, stringsAsFactors = F)
+
+exitRead <- 'Successful'
+exitRead.time <- proc.time() - exitRead.time
+exitRead.time <- round(exitRead.time[3], digits = 1)
+
+```
+
+
+#Empty summary stats file
+
+```{r}
+tcrStats <- data.frame(SampleID= character(0), Chain= character(0), Month = integer(0), Patient.Control = character(0), ng.RNA = integer(0), Number.Reads = integer(0), Number.Sequences = integer(0), Number.Unique.Sequences = integer(0), Top.Clonotype = integer(0), Gini = integer(0), Shannon = integer(0), Chao1 = integer(0), Mean.Abundance = integer(0), Number.VJ.Rearrangements = integer(0), Pcnt.Rearrangements.Found = integer(0))
+```
+
+
+#Run Demultiplexor
+
+```{r}
+exitDemultiplexor <- 'Failed'
+exitDemultiplexor.time <- proc.time()
+
+#Checks the R1 file against file names in the info file
+fileName <- strsplit(fastQFileR1,'/')[[1]]
+name <- fileName[length(fileName)]
+
+#Create the output directory
+demultiplexorOutputPath <- paste(outputPath,'/DemultiplexorOutput',sep='')
+dir.create(demultiplexorOutputPath)
+
+#Has demultiplexor already been run? - if so, don't run
+demultiplexorFiles <- list.files(path=demultiplexorOutputPath, pattern="*.fq.gz", full.names=T, recursive=FALSE)
+for (i in sequence(length(demultiplexorFiles))){
+  temp <- strsplit(demultiplexorFiles[i], split='/')[[1]]
+  demultiplexorFiles[i] <- temp[length(temp)]
+}
+counter <- 0 #Number of files not there
+for (demultiplexorFile in indexFile$V1){ #Expected files
+  demultiplexorFile <- paste(demultiplexorFile,'.fq.gz',sep='') #Expected output
+  if (demultiplexorFile %!in% demultiplexorFiles){
+    counter <- counter + 1
+  }
+}
+
+#Run demutiplexor (typically takes multiple hours)
+if(counter > 0){
+  print('Running Demultiplexor, this may take several hours...')
+  #Demultiplexor - read 1 - read 2 - index 1/read 3 - file info
+  command <- paste('cd', demultiplexorOutputPath, '&&', 'pwd', '&&', python, paste(scriptPath, '/Demultiplexor.py -r1', sep=''), fastQFileR1, '-r2', fastQFileR2, '-i1', fastQFileI1, '-ix', indexFileName)
+  system(command)
+  exitDemultiplexor <- 'Successful'
+  exitDemultiplexor.time <- proc.time() - exitDemultiplexor.time
+  exitDemultiplexor.time <- round(exitDemultiplexor.time[3], digits = 1)
+}
+
+if(counter == 0){
+  print('Demultiplexor has already been run, skipping this step...')
+  exitDemultiplexor <- 'Skipped'
+  exitDemultiplexor.time <- proc.time() - exitDemultiplexor.time
+  exitDemultiplexor.time <- round(exitDemultiplexor.time[3], digits = 1)
+}
+```
+
+
+#Run Decombinator
+
+```{r}
+exitDecombinator <- 'Failed'
+exitDecombinator.time <- proc.time()
+
+
+#Decombinator - loop through all alphas, loop through all betas, run decombinator over each.
+fastQFilesA <- list.files(path=demultiplexorOutputPath, pattern="-a.fq.gz", full.names=T, recursive=FALSE) #alpha chains
+fastQFilesB <- list.files(path=demultiplexorOutputPath, pattern="-b.fq.gz", full.names=T, recursive=FALSE) #beta chains
+
+
+#Error handling
+if(length(fastQFilesA)==0){print('No alpha Demultiplexor output found.')}
+if(length(fastQFilesB)==0){print('No beta Demultiplexor output found.')}
+
+
+#Create the output directory
+decombinatorOutputPath <- paste(outputPath,'/DecombinatorOutput',sep='')
+dir.create(decombinatorOutputPath)
+
+
+#Does info file correspond to demultiplexor outcome files?
+for (file in c(fastQFilesA,fastQFilesB)){
+  file <- strsplit(file, split='/')[[1]]
+  file <- file[length(file)]
+  file <- strsplit(file, split='[.]')[[1]][1]
+  if (file %!in% infoFile$File.Name){
+    print(paste(file, 'not found in the info file. Summary stats will not be produced for it.'))
+  }
+}
+
+#Has decombinator already been run?
+decombinatorFiles <- list.files(path=decombinatorOutputPath, pattern="*.n12.gz", full.names=T, recursive=FALSE)
+for (i in sequence(length(decombinatorFiles))){
+  temp <- strsplit(decombinatorFiles[i], split='/')[[1]]
+  decombinatorFiles[i] <- temp[length(temp)]
+}
+counter <- 0 #Number of files not there
+for (decombinatorFile in indexFile$V1){ #Expected files
+  if (any(grepl(decombinatorFile, decombinatorFiles))==F){
+    counter <- counter + 1
+  }
+}
+
+
+#Run decombinator
+if (counter > 0){
+  for (file in fastQFilesA){
+    command <- paste('cd', decombinatorOutputPath, '&&', python, paste(scriptPath, '/Decombinator.py -fq ',file,' -c a', sep=''))
+    print('Running Decombinator...')
+    system(command)
+  }
+  
+  for (file in fastQFilesB){
+    command <- paste('cd', decombinatorOutputPath, '&&', python, paste(scriptPath, '/Decombinator.py -fq ',file,' -c b', sep=''))
+    print('Running Decombinator...')
+    system(command)
+  }
+  exitDecombinator <- 'Successful'
+  exitDecombinator.time <- proc.time() - exitDecombinator.time
+  exitDecombinator.time <- round(exitDecombinator.time[3], digits = 1)
+}
+
+if(counter == 0){
+  print('Decombinator has already been run, skipping this step...')
+  exitDecombinator <- 'Skipped'
+  exitDecombinator.time <- proc.time() - exitDecombinator.time
+  exitDecombinator.time <- round(exitDecombinator.time[3], digits = 1)
+
+}
+
+```
+
+
+
+#Run Collapsinator
+
+```{r}
+exitCollapsinator <- 'Failed'
+exitCollapsinator.time <- proc.time()
+
+
+#Collapsinator - loop through all n12 files, run collapsinator over each.
+n12Files <- list.files(path=decombinatorOutputPath, pattern=".n12.gz", full.names=T, recursive=FALSE)
+
+
+#Error handling
+if(length(n12Files)==0){print('No Decombinator output found.')}
+
+
+#Create the output directory
+collapsinatorOutputPath <- paste(outputPath,'/CollapsinatorOutput',sep='')
+dir.create(collapsinatorOutputPath)
+
+
+#Has collapsinator already been run?
+collapsinatorFiles <- list.files(path=collapsinatorOutputPath, pattern="*.freq.gz", full.names=T, recursive=FALSE)
+for (i in sequence(length(collapsinatorFiles))){
+  temp <- strsplit(collapsinatorFiles[i], split='/')[[1]]
+  collapsinatorFiles[i] <- temp[length(temp)]
+}
+counter <- 0 #Number of files not there
+for (collapsinatorFile in indexFile$V1){ #Expected files
+    if (any(grepl(collapsinatorFile, collapsinatorFiles))==F){
+    counter <- counter + 1
+  }
+}
+
+
+#Run collapsinator
+
+if (counter > 0){
+  for (file in n12Files){
+    if (collapsinatorN == TRUE){
+      command <- paste('cd', collapsinatorOutputPath, '&&', python, paste(scriptPath, '/Collapsinator_V2.py -in ',file,' -N', sep=''))
+    }
+    if (collapsinatorN == FALSE){
+      command <- paste('cd', collapsinatorOutputPath, '&&', python, paste(scriptPath, '/Collapsinator_V2.py -in ',file, sep=''))
+    }
+    print('Running Collapsinator Version 2...')
+    system(command)
+  }
+  exitCollapsinator <- 'Successful'
+  exitCollapsinator.time <- proc.time() - exitCollapsinator.time
+  exitCollapsinator.time <- round(exitCollapsinator.time[3], digits = 1)
+}
+
+if (counter == 0){
+    print('Collapsinator has already been run, skipping this step...')
+    exitCollapsinator <- 'Skipped'
+    exitCollapsinator.time <- proc.time() - exitCollapsinator.time
+    exitCollapsinator.time <- round(exitCollapsinator.time[3], digits = 1)
+}
+
+#Check collapsinator file size. If file is broken, run again with -N
+
+```
+
+
+
+#Run CDR3 Translator
+
+```{r}
+exitCDR3Translator <- 'Failed'
+exitCDR3Translator.time <- proc.time()
+
+
+#CDR3 Translator - loop through all alphas, loop through all betas, run collapsinator over each.
+freqFilesA <- list.files(path=collapsinatorOutputPath, pattern="-a.freq.gz", full.names=T, recursive=FALSE) #alpha chains
+freqFilesB <- list.files(path=collapsinatorOutputPath, pattern="-b.freq.gz", full.names=T, recursive=FALSE) #beta chains
+
+
+#Error handling
+if(length(freqFilesA)==0){print('No alpha Collapsinator output found.')}
+if(length(freqFilesB)==0){print('No beta Collapsinator output found.')}
+
+
+#Create the output directory
+CDR3TranslatorOutputPath <- paste(outputPath,'/CDR3TranslatorOutput',sep='')
+dir.create(CDR3TranslatorOutputPath)
+
+
+#Had CDR3 translator already been run?
+CDR3TranslatorFiles <- list.files(path=CDR3TranslatorOutputPath, pattern="\\.cdr3.gz", full.names=T, recursive=FALSE)
+for (i in sequence(length(CDR3TranslatorFiles))){
+  temp <- strsplit(CDR3TranslatorFiles[i], split='/')[[1]]
+  CDR3TranslatorFiles[i] <- temp[length(temp)]
+}
+counter <- 0 #Number of files not there
+for (CDR3TranslatorFile in indexFile$V1){ #Expected files
+  if (any(grepl(CDR3TranslatorFile, CDR3TranslatorFiles))==F){
+    counter <- counter + 1
+  }
+}
+
+#Run CDR3 translator
+
+if (counter > 0){
+  #Standard CDR3 Translator
+  for (file in freqFilesA){
+    command <- paste('cd', CDR3TranslatorOutputPath, '&&', python, paste(scriptPath, '/ModifiedCDR3translator.py -in ',file,' -c alpha', sep=''))
+    print('Running A Modified Version Of CDR3 Translator...')
+    system(command)
+  }
+  
+  for (file in freqFilesB){
+    command <- paste('cd', CDR3TranslatorOutputPath, '&&', python, paste(scriptPath, '/ModifiedCDR3translator.py -in ',file,' -c beta', sep=''))
+    print('Running A Modified Version Of CDR3 Translator...')
+    system(command)
+  }
+  
+  #DCRCDR3 for GeneNameTranslator
+  for (file in freqFilesA){
+    command <- paste('cd', CDR3TranslatorOutputPath, '&&', python, paste(scriptPath, '/ModifiedCDR3translator.py -in ',file,' -c alpha --dcroutput -np', sep=''))
+    print('Using CDR3 Translator to produce .dcrcdr3 files...')
+    system(command)
+  }
+  
+  for (file in freqFilesB){
+    command <- paste('cd', CDR3TranslatorOutputPath, '&&', python, paste(scriptPath, '/ModifiedCDR3translator.py -in ',file,' -c beta --dcroutput -np', sep=''))
+    print('Using CDR3 Translator to produce .dcrcdr3 files...')
+    system(command)
+  }
+
+  exitCDR3Translator <- 'Successful'
+  exitCDR3Translator.time <- proc.time() - exitCDR3Translator.time
+  exitCDR3Translator.time <- round(exitCDR3Translator.time[3], digits = 1)
+}
+
+if (counter == 0){
+  print('CDR3 Translator has already been run, skipping this step...')
+  exitCDR3Translator <- 'Skipped'
+  exitCDR3Translator.time <- proc.time() - exitCDR3Translator.time
+  exitCDR3Translator.time <- round(exitCDR3Translator.time[3], digits = 1)
+}
+```
+
+
+#Run Gene Name Translator
+
+```{r}
+exitGNTranslator <- 'Failed'
+exitGNTranslator.time <- proc.time()
+
+
+#GN Translator - run GNTranslator over each .dcrcdr3 file produced by CDR3Translator.
+dcrcdr3Files <- list.files(path=CDR3TranslatorOutputPath, pattern=".dcrcdr3.gz", full.names=T, recursive=FALSE)
+npFiles <- list.files(path=CDR3TranslatorOutputPath, pattern=".np.gz", full.names=T, recursive=FALSE)
+
+#Error handling
+if(length(dcrcdr3Files)==0){print('No CDR3 Translator output found.')}
+
+
+#Create the output directory
+GNTranslatorOutputPath <- paste(outputPath,'/GNTranslatorOutput',sep='')
+dir.create(GNTranslatorOutputPath)
+
+
+#Had GN translator already been run?
+GNTranslatorFiles <- list.files(path=GNTranslatorOutputPath, pattern="*tr_dcrcdr3", full.names=T, recursive=FALSE)
+for (i in sequence(length(GNTranslatorFiles))){
+  temp <- strsplit(GNTranslatorFiles[i], split='/')[[1]]
+  GNTranslatorFiles[i] <- temp[length(temp)]
+}
+counter <- 0 #Number of files not there
+for (GNTranslatorFile in indexFile$V1){ #Expected files
+  if (any(grepl(GNTranslatorFile, GNTranslatorFiles))==F){
+    counter <- counter + 1
+  }
+}
+
+#Run GN translator
+
+if (counter > 0){
+  #Standard GN Translator
+  for (file in dcrcdr3Files){
+    command <- paste('cd', GNTranslatorOutputPath, '&&', python, paste(scriptPath, '/ModifiedDCRtoGeneName.py -in ',file, sep=''))
+    print('Running DCRtoGeneName...')
+    system(command)
+  }
+  for (file in npFiles){
+    command <- paste('cd', GNTranslatorOutputPath, '&&', python, paste(scriptPath, '/ModifiedDCRtoGeneName.py -in ',file, sep=''))
+    print('Running DCRtoGeneName on nonproductives...')
+    system(command)
+  }
+
+  
+  exitGNTranslator <- 'Successful'
+  exitGNTranslator.time <- proc.time() - exitGNTranslator.time
+  exitGNTranslator.time <- round(exitGNTranslator.time[3], digits = 1)
+}
+
+if (counter == 0){
+  print('Gene Name Translator has already been run, skipping this step...')
+  exitGNTranslator <- 'Skipped'
+  exitGNTranslator.time <- proc.time() - exitGNTranslator.time
+  exitGNTranslator.time <- round(exitGNTranslator.time[3], digits = 1)
+}
+```
+
+
+
+
+#Read in Gene Name and CDR3 Output
+Blast CDR3 output against VDJB
+
+```{r}
+exitStats <- 'Failed'
+exitStats.time <- proc.time()
+
+#VDJDB - For determining TCR antigen specificity
+tra <- read.csv(paste(inputPath,'/traAntigen.csv', sep=''), header = T, stringsAsFactors = F, sep = '\t')
+trb <- read.csv(paste(inputPath,'/trbAntigen.csv', sep=''), header = T, stringsAsFactors = F, sep = '\t')
+
+
+#Plots Output Directory
+plotsOutputPath <- paste(outputPath,'/Plots',sep='')
+dir.create(plotsOutputPath)
+
+
+#Read in final cdr3 files
+CDR3Files <- list.files(path=CDR3TranslatorOutputPath, pattern="\\.cdr3.gz", full.names=T, recursive=FALSE)
+
+if (length(CDR3Files)>0){
+  
+  cdr3Dat <- data.frame(character(), character(), character(), character(), character())
+  
+  for (file in CDR3Files){
+    fileName <- strsplit(file, split='/')[[1]]
+    fileName <- fileName[length(fileName)]
+    fileName <- strsplit(fileName, split='[.]')[[1]][1]
+    sampleID <- strsplit(fileName, split='_')[[1]][3]
+    chain <- strsplit(fileName, split='-')[[1]][2]
+    ID <- strsplit(sampleID, split='-')[[1]][1]
+    month <- unlist(strsplit(gsub("[^0-9]", "", unlist(ID)), ""))
+    month <- as.numeric(paste(month, collapse = ''))
+    ID = gsub("[[:digit:]]", "", ID)
+
+    #Read in cdr3 file
+    cdr3DatTemp <- read.csv(file,header=F, stringsAsFactors=F)
+    cdr3DatTemp$ID <- ID
+    cdr3DatTemp$month <- month
+    cdr3DatTemp$chain <- chain
+    cdr3DatTemp$sampleID <- sampleID
+    cdr3Dat <- rbind(cdr3Dat,cdr3DatTemp)
+  
+  }
+  
+  #Blast the CDR3 data against the VDJDB
+  cdr3Dat$antigen <- NA
+  cdr3Dat$antigen[cdr3Dat$chain=='a'] <- tra$Epitope.species[match(cdr3Dat$V1[cdr3Dat$chain=='a'],tra$CDR3)]
+  cdr3Dat$antigen[cdr3Dat$chain=='b'] <- trb$Epitope.species[match(cdr3Dat$V1[cdr3Dat$chain=='b'],trb$CDR3)]
+  
+  #Expand the CDR3 dataset by the frequency of the clonotypes
+  cdr3Dat.expanded <- cdr3Dat[rep(row.names(cdr3Dat), cdr3Dat$V2),]
+}
+
+if (length(CDR3Files)==0){
+  print('No CDR3 Translator Output Files Found.')
+}
+
+
+
+
+#Read in gene name files...
+GNFiles <- list.files(path=GNTranslatorOutputPath, pattern=".dcrcdr3.gz", full.names=T, recursive=FALSE)
+
+if (length(GNFiles)>0){
+  gnDat <- data.frame(character(), character(), character(), character(), character(), character(), character(), character(), character(), character())
+  
+  for(file in GNFiles){
+    fileName <- strsplit(file, split='/')[[1]]
+    fileName <- fileName[length(fileName)]
+    fileName <- strsplit(fileName, split='[.]')[[1]][1]
+    sampleID <- strsplit(fileName, split='_')[[1]][3]
+    chain <- strsplit(fileName, split='-')[[1]][2]
+    ID <- strsplit(sampleID, split='-')[[1]][1]
+    month <- unlist(strsplit(gsub("[^0-9]", "", unlist(ID)), ""))
+    month <- as.numeric(paste(month, collapse = ''))
+    ID = gsub("[[:digit:]]", "", ID)
+    
+    #Read in cdr3 file
+    gnDatTemp <- read.csv(file,header=F, stringsAsFactors=F)
+    gnDatTemp$ID <- ID
+    gnDatTemp$month <- month
+    gnDatTemp$chain <- chain
+    gnDatTemp$sampleID <- sampleID
+    gnDat <- rbind(gnDat,gnDatTemp)
+  }
+  temp <- unlist(strsplit(gnDat$V5, split=':'))
+  gnDat$freqID <- temp[seq(1,length(temp),2)]
+  gnDat$CDR3 <- temp[seq(2,length(temp),2)]
+  
+  gnDat.expanded <- gnDat[rep(row.names(gnDat), gnDat$V6),]
+}
+
+#...and nonproductives.
+
+npFiles <- list.files(path=GNTranslatorOutputPath, pattern="_np.gz", full.names=T, recursive=FALSE)
+
+if (length(npFiles)>0){
+  npgnDat <- data.frame(character(), character(), character(), character(), character(), character(), character(), character(), character(), character())
+  
+  for(file in npFiles){
+    fileName <- strsplit(file, split='/')[[1]]
+    fileName <- fileName[length(fileName)]
+    fileName <- strsplit(fileName, split='[.]')[[1]][1]
+    sampleID <- strsplit(fileName, split='_')[[1]][3]
+    chain <- strsplit(fileName, split='-')[[1]][2]
+    ID <- strsplit(sampleID, split='-')[[1]][1]
+    month <- unlist(strsplit(gsub("[^0-9]", "", unlist(ID)), ""))
+    month <- as.numeric(paste(month, collapse = ''))
+    ID = gsub("[[:digit:]]", "", ID)
+    
+    #Read in cdr3 file
+    npgnDatTemp <- read.csv(file,header=F, stringsAsFactors=F)
+    npgnDatTemp$ID <- ID
+    npgnDatTemp$month <- month
+    npgnDatTemp$chain <- chain
+    npgnDatTemp$sampleID <- sampleID
+    npgnDat <- rbind(npgnDat,npgnDatTemp)
+  }
+  temp <- unlist(strsplit(npgnDat$V5, split=':'))
+  npgnDat$freqID <- temp[seq(1,length(temp),2)]
+  npgnDat$Stop <- temp[seq(2,length(temp),2)]
+  
+  npgnDat.expanded <- npgnDat[rep(row.names(npgnDat), npgnDat$V6),]
+}
+
+if (length(GNFiles)==0){
+  print('No Gene Name Translator Output Files Found...')
+}
+
+```
+
+
+#CDR3 Density Plots
+
+```{r, warning=FALSE}
+#### CDR3 Density Plots - frequency
+CDR3FreqDensOutputPath <- paste(plotsOutputPath,'/CDR3FrequencyDensity',sep='')
+dir.create(CDR3FreqDensOutputPath)
+IndividualCDR3FreqDensOutputPath <- paste(CDR3FreqDensOutputPath,'/IndividualPlots',sep='')
+dir.create(IndividualCDR3FreqDensOutputPath)
+
+#Plot for each individual
+for (i in unique(cdr3Dat$sampleID)){
+  cdr3DatTemp <- cdr3Dat[cdr3Dat$sampleID==i,]
+  ggp <- ggplot(data=cdr3DatTemp)+
+    geom_line(aes(V2), stat='density')+
+    scale_x_log10()+
+    theme_classic()+
+    labs(title=paste(i, '\t\t Num. Reads =', sum(cdr3DatTemp$V2)), x='Freq. of CDR3 Sequences', y='Density')
+  
+  ggsave(paste(IndividualCDR3FreqDensOutputPath, '/', i, '.pdf', sep = ''), 
+         ggp, width = 10, height = 10, units = c('cm'))
+}
+
+#Group plot
+for (i in unique(cdr3Dat$ID)){
+  ggps <- list()
+  counter <- 1
+  for (j in unique(cdr3Dat$month[cdr3Dat$ID==i])){
+    for (k in unique(cdr3Dat$chain[cdr3Dat$ID==i & cdr3Dat$month == j])){
+  
+      cdr3DatTemp <- cdr3Dat[cdr3Dat$ID==i & cdr3Dat$month == j & cdr3Dat$chain == k,]
+      ggp <- ggplot(data=cdr3DatTemp)+
+        geom_line(aes(V2), stat='density')+
+        #scale_x_log10()+
+        theme_classic()+
+        labs(title=paste(i, j, k, paste('\t Num. Reads = ', sum(cdr3DatTemp$V2), sep = ''), sep = ''), x='Freq. of CDR3 Sequences', y='Density')
+      
+      ggps[[counter]] <- ggp
+      counter <- counter + 1
+    }
+  }
+  pdf(paste(CDR3FreqDensOutputPath, '/', i, 'SampleCDR3Frequency', '.pdf', sep = ''), width = 12, height = 8)
+  multiplot(plotlist = ggps, cols=counter/2)
+  dev.off()
+}
+
+
+####CDR3 Density Plots - Length (amino acids)
+CDR3LenDensOutputPath <- paste(plotsOutputPath,'/CDR3LengthDensity',sep='')
+dir.create(CDR3LenDensOutputPath)
+IndividualCDR3LenDensOutputPath <- paste(CDR3LenDensOutputPath,'/IndividualPlots',sep='')
+dir.create(IndividualCDR3LenDensOutputPath)
+
+#Calculate CDR3 Length
+cdr3Dat$CDR3Len <- nchar(as.character(cdr3Dat$V1))
+
+#Plot for each individual
+for (i in unique(cdr3Dat$sampleID)){
+  cdr3DatTemp <- cdr3Dat[cdr3Dat$sampleID==i,]
+  cdr3DatTemp.expanded <- cdr3DatTemp[rep(row.names(cdr3DatTemp), cdr3DatTemp$V2),]
+  ggp <- ggplot(data=cdr3DatTemp.expanded)+
+    geom_line(aes(CDR3Len), stat='density')+
+    scale_x_continuous(limits=c(0,max(cdr3Dat$CDR3Len)))+
+    theme_classic()+
+    labs(title=paste(i, '\t\t Num. Reads =', sum(cdr3DatTemp$V2)), x='Length of CDR3 Sequences', y='Density')
+  
+  ggsave(paste(IndividualCDR3LenDensOutputPath, '/', i, '.pdf', sep = ''), 
+         ggp, width = 10, height = 10, units = c('cm'))
+}
+
+#Group plot
+for (i in unique(cdr3Dat$ID)){
+  ggps <- list()
+  counter <- 1
+  for (j in unique(cdr3Dat$month[cdr3Dat$ID==i])){
+    for (k in unique(cdr3Dat$chain[cdr3Dat$ID==i & cdr3Dat$month == j])){
+  
+      cdr3DatTemp <- cdr3Dat[cdr3Dat$ID==i & cdr3Dat$month == j & cdr3Dat$chain == k,]
+      cdr3DatTemp.expanded <- cdr3DatTemp[rep(row.names(cdr3DatTemp), cdr3DatTemp$V2),]
+      ggp <- ggplot(data=cdr3DatTemp.expanded)+
+        geom_line(aes(CDR3Len), stat='density')+
+        scale_x_continuous(limits=c(0,max(cdr3Dat$CDR3Len)))+
+        scale_y_continuous(limits=c(0,0.65))+
+        theme_classic()+
+        theme(axis.title.x=element_blank())+
+        labs(title=paste(i, j, k, paste('\t Num. Reads = ' ,sum(cdr3DatTemp$V2), sep = ''), sep = ''), x='Length of CDR3 Sequences', y='Density')
+      
+      ggps[[counter]] <- ggp
+      counter <- counter + 1
+    }
+  }
+  pdf(paste(CDR3LenDensOutputPath, '/', i, 'SampleCDR3Lengths', '.pdf', sep = ''), width = 12, height = 8)
+  multiplot(plotlist = ggps, cols=counter/2)
+  dev.off()
+}
+
+```
+
+
+#Amino Acid Plots
+
+```{r, warning=FALSE}
+#### Amino Acid Plots - frequency
+aaFreqOutputPath <- paste(plotsOutputPath,'/AminoAcidFrequency',sep='')
+dir.create(aaFreqOutputPath)
+IndividualaaFreqOutputPath <- paste(aaFreqOutputPath,'/IndividualPlots',sep='')
+dir.create(IndividualaaFreqOutputPath)
+vsControlaaFreqOutputPath <- paste(aaFreqOutputPath,'/ControlPlots',sep='')
+dir.create(vsControlaaFreqOutputPath)
+
+
+#Control - Randomly generated AA freq based on number of possible nucleotide triplet combinations + 2 stop codons.
+numSamples <- 100000
+seq <- list('M','H','H','Q','Q','P','P','P','P','R','R','R','R','L','L','L','L','D','D','E','E','A','A',
+        'A','A','G','G','G','G','V','V','V','V','Y','Y','S','S','S','S','C','C','W','F','F','L','L',
+        'N','N','K','K','T','T','T','T','S','S','R','R','I','I','I')
+
+sample <- unlist(seq[sample(1:length(seq), numSamples, replace=T)])
+aaControl <- as.data.frame(table(sample))
+aaControl$sample <- factor(aaControl$sample, levels = aaControl$sample[order(-aaControl$Freq)])
+aaControl$normalised <- (aaControl$Freq/numSamples)*100
+ggp <- ggplot(data=aaControl, aes(x = aaControl$sample, y = aaControl$normalised)) + 
+    geom_bar(stat = 'identity') + 
+    scale_x_discrete()+
+    labs(title=paste('Control A.A. Seq. by # 3 Codons', '\t\t Num. Reads =', numSamples), x = 'Amino Acid', y = '% of Sample')+
+    theme_classic()
+
+ggsave(paste(vsControlaaFreqOutputPath, '/', 'RandomlyGeneratedTripletNucleotideControl', '.pdf', sep = ''), 
+        ggp, width = 14, height = 10, units = c('cm'))
+
+
+#Plot for each individual
+for (i in unique(cdr3Dat$sampleID)){
+  cdr3DatTemp <- cdr3Dat[cdr3Dat$sampleID==i,]
+  cdr3DatTemp.expanded <- cdr3DatTemp[rep(row.names(cdr3DatTemp), cdr3DatTemp$V2),]
+  aa <- as.data.frame(table(unlist(strsplit(cdr3DatTemp.expanded$V1,split=''))))
+  aa$Var1 <- factor(aa$Var1, levels = aa$Var1[order(-aa$Freq)])
+  aa$normalised <- (aa$Freq/sum(aa$Freq))*100
+  
+  aavsControl <- aa
+  aavsControl$cntrl <- aaControl$normalised[aavsControl$Var1==aaControl$sample]
+  
+  ggp <- ggplot(data=aa, aes(x = aa$Var1, y = aa$Freq)) + 
+    geom_bar(stat = 'identity') + 
+    scale_x_discrete()+
+    labs(title=paste(i, '\t\t Num. Reads =', sum(cdr3DatTemp$V2)), x = 'Amino Acid', y = 'Frequency')+
+    theme_classic()
+  
+  ggsave(paste(IndividualaaFreqOutputPath, '/', i, '.pdf', sep = ''), 
+         ggp, width = 10, height = 10, units = c('cm'))
+  
+  
+  #Plot patient AA representation VS control with AB line
+  ggp <- ggplot(data = aavsControl)+
+    geom_text(aes(x = cntrl, y = normalised, label = Var1, colour = Var1))+
+    geom_abline(slope=1, intercept=0)+
+    labs(title=paste(i, ' Amino Acid Representation Vs Control',sep = ''), x = 'Control AA Representation (% Sample)', y = 'Individual AA Representation (% Sample)')+
+    expand_limits(y = 0, x = 0)+
+    theme_classic()+
+    theme(legend.position = 'none')
+  
+  ggsave(paste(vsControlaaFreqOutputPath, '/', i, '.pdf', sep = ''), 
+         ggp, width = 12, height = 10, units = c('cm'))
+}
+
+
+#AA frequency/time - calculation
+aa <- data.frame(character(),character(),character(),character(),character(),character())
+for (i in unique(cdr3Dat$ID)){
+  counter <- 1
+  for (j in unique(cdr3Dat$month[cdr3Dat$ID==i])){
+    for (k in unique(cdr3Dat$chain[cdr3Dat$ID==i & cdr3Dat$month == j])){
+  
+      cdr3DatTemp <- cdr3Dat[cdr3Dat$ID==i & cdr3Dat$month == j & cdr3Dat$chain == k,]
+      cdr3DatTemp.expanded <- cdr3DatTemp[rep(row.names(cdr3DatTemp), cdr3DatTemp$V2),]
+      aaTemp <- as.data.frame(table(unlist(strsplit(cdr3DatTemp.expanded$V1,split=''))))
+      aaTemp$ID <- i
+      aaTemp$Month <- j
+      aaTemp$Chain <- k
+      aaTemp$Freq <- (aaTemp$Freq/sum(aaTemp$Freq))*100
+      aa <- rbind(aa, aaTemp)
+    }
+  }
+}
+#AA frequency/time - plotting
+for (i in unique(aa$ID)){
+  ggps <- list()
+  counter <- 1
+  for (j in unique(aa$Chain)){
+    aaTemp <- aa[aa$ID==i & aa$Chain==j,]
+    ggp <- ggplot(data=aaTemp)+
+      geom_line(aes(x=Month, y=Freq, group=Var1, colour=Var1))+
+      geom_point(data=aaTemp[aaTemp$Month==min(aaTemp$Month),],aes(x=Month, y=Freq, colour=Var1))+
+      geom_text(data=aaTemp[aaTemp$Month!=min(aaTemp$Month),],aes(x=Month, y=Freq, label=Var1, colour=Var1))+
+      geom_text_repel(data = aaTemp[aaTemp$Month==min(aaTemp$Month),],aes(x=min(Month), y=Freq, label=Var1, colour=Var1))+
+      labs(title=paste(i,'-',j, ' Amino Acid Representation',sep = ''), x = 'Month', y = '% of Sample')+
+      theme_classic()+
+      theme(legend.position = 'none')
+    ggps[[counter]] <- ggp
+    counter <- counter + 1
+  }
+  pdf(paste(aaFreqOutputPath, '/', i, 'AminoAcidRepresentation', '.pdf', sep = ''), width = 14, height = 8)
+  multiplot(plotlist = ggps, cols=length(ggps))
+  dev.off()
+
+}
+
+
+
+#Control freq vs patient freq
+
+#Number of CDR3 sequences over time/patient
+
+```
+
+    
+
+#V/J Gene Usage Plots
+    
+```{r}    
+#CDR3 length by gene name
+
+#Freq of V J usage
+
+#
+
+gnOutputPath <- paste(plotsOutputPath,'/VJGenes',sep='')
+dir.create(gnOutputPath)
+VIndividualgnOutputPath <- paste(gnOutputPath,'/V-IndividualPlots',sep='')
+dir.create(VIndividualgnOutputPath)
+JIndividualgnOutputPath <- paste(gnOutputPath,'/J-IndividualPlots',sep='')
+dir.create(JIndividualgnOutputPath)
+VGeneOutputPath <- paste(gnOutputPath,'/V-GenePlots',sep='')
+dir.create(VGeneOutputPath)
+JGeneOutputPath <- paste(gnOutputPath,'/J-GenePlots',sep='')
+dir.create(JGeneOutputPath)
+
+
+for (i in unique(gnDat.expanded$ID)){
+  for (j in unique(gnDat.expanded$chain)){
+
+    #V Gene
+    gnDatTemp <- gnDat.expanded[gnDat.expanded$ID==i & gnDat.expanded$chain==j,]
+    gnDatTemp <- as.data.frame(table(gnDatTemp$V1))
+    gnDatTemp <- gnDatTemp[order(-gnDatTemp$Freq),]
+    gnDatTemp$Var1 <- factor(gnDatTemp$Var1, levels = gnDatTemp$Var1[order(-gnDatTemp$Freq)])
+    
+    ggp <- ggplot(data=gnDatTemp, aes(x = Var1, y = Freq)) + 
+      geom_bar(stat = 'identity') + 
+      geom_text(aes(label=Var1), vjust=.5, hjust=-.1, angle=90) +
+      scale_x_discrete()+
+      scale_y_continuous(limits=c(0,max(gnDatTemp$Freq)+(max(gnDatTemp$Freq)/10)))+
+      labs(title=paste(i, '-', j, '\t\t Num. Reads =', sum(cdr3DatTemp$V2)), x = 'V Gene', y = 'Frequency')+
+      theme_classic()+
+      theme(axis.ticks.x=element_blank(),
+            axis.text.x=element_blank())
+      
+    ggsave(paste(VIndividualgnOutputPath, '/', i, '-', j, '.pdf', sep = ''), 
+         ggp, width = 20, height = 20, units = c('cm'))
+    
+    #J Gene
+    gnDatTemp <- gnDat.expanded[gnDat.expanded$ID==i & gnDat.expanded$chain==j,]
+    gnDatTemp <- as.data.frame(table(gnDatTemp$V2))
+    gnDatTemp <- gnDatTemp[order(-gnDatTemp$Freq),]
+    gnDatTemp$Var1 <- factor(gnDatTemp$Var1, levels = gnDatTemp$Var1[order(-gnDatTemp$Freq)])
+
+    
+    ggp <- ggplot(data=gnDatTemp, aes(x = Var1, y = Freq)) + 
+      geom_bar(stat = 'identity') + 
+      geom_text(aes(label=Var1), vjust=.5, hjust=-.1, angle=90) +
+      scale_x_discrete()+
+      scale_y_continuous(limits=c(0,max(gnDatTemp$Freq)+(max(gnDatTemp$Freq)/10)))+
+      labs(title=paste(i, '-', j, '\t\t Num. Reads =', sum(cdr3DatTemp$V2)), x = 'J Gene', y = 'Frequency')+
+      theme_classic()+
+      theme(axis.ticks.x=element_blank(),
+            axis.text.x=element_blank())
+      
+    ggsave(paste(JIndividualgnOutputPath, '/', i, '-', j, '.pdf', sep = ''), 
+         ggp, width = 20, height = 20, units = c('cm'))
+
+  }
+}
+
+#for (i in unique(cdr3Dat$sampleID)){
+#  cdr3DatTemp <- cdr3Dat[cdr3Dat$sampleID==i,]
+#  ggp <- ggplot(data=cdr3DatTemp)+
+#    geom_line(aes(V2), stat='density')+
+#    scale_x_log10()+
+#    theme_classic()+
+#    labs(title=paste(i, '\t\t Num. Reads =', sum(cdr3DatTemp$V2)), x='Freq. of CDR3 Sequences', y='Density')
+#  
+#  ggsave(paste(IndividualCDR3FreqDensOutputPath, '/', i, '.pdf', sep = ''), 
+#         ggp, width = 10, height = 10, units = c('cm'))
+#}
+
+gnDat$CDR3Len <-  nchar(as.character(gnDat$CDR3))
+
+#V Gene - by patient and month
+#for (i in unique(gnDat$ID)){
+#  gnDatTemp <- gnDat[gnDat$ID==i,]
+#  for (j in unique(gnDatTemp$month)){
+#    gnDatTempJ <- gnDatTemp[gnDatTemp$month==j,]
+#    for (k in unique(gnDatTempJ$chain)){
+#      gnDatTempK <- gnDatTempJ[gnDatTempJ$chain==k,]
+#     for (l in unique(gnDatTempK$V1)){
+#       gnDatTempL <- gnDatTempK[gnDatTempK$V1==l,]
+#        gnDatTempL <- gnDatTempL[rep(row.names(gnDatTempL), gnDatTempL$V6),]
+#       
+#       ggp <- ggplot(data=gnDatTempL)+
+#        geom_line(aes(CDR3Len), stat='density')+
+#        theme_classic()+
+#        labs(title=paste(i,'-',j,'-',k,'-',l, '\t\t Num. Reads =', sum(gnDatTempJ$V6), sep=''), x='Length of CDR3 Sequences', y='Density')
+#       
+#     } 
+#    }
+#  }
+#}
+
+gnDat$V1 <- gsub('/','-',gnDat$V1)
+gnDat$V2 <- gsub('/','-',gnDat$V2)
+
+#V Gene - not split by anything
+for (ID in unique(gnDat$ID)){
+  gnDatID <- gnDat[gnDat$ID==ID,]
+  for (i in unique(gnDatID$V1)){
+    gnDatTemp <- gnDat[gnDat$V1==i,]
+    gnDatTempI <- gnDatTemp[rep(row.names(gnDatTemp), gnDatTemp$V6),]
+    if (length(gnDatTemp$V1)>3){ #Enough to form a density function
+        ggp <- ggplot(data=gnDatTempI)+
+          geom_line(aes(CDR3Len), stat='density')+
+          scale_x_continuous(limits=c(0,max(gnDatTempI$CDR3Len)+2))+
+          theme_classic()+
+          labs(title=paste(i, '\t\t Num. Reads =', sum(gnDatTemp$V6), sep=''), x='Length of CDR3 Sequences', y='Density')
+        ggsave(paste(VGeneOutputPath, '/',ID, '-', i, '.pdf', sep = ''), 
+               ggp, width = 10, height = 10, units = c('cm'))
+    }
+  }
+}
+#J Gene - not split by anything
+for (ID in unique(gnDat$ID)){
+  gnDatID <- gnDat[gnDat$ID==ID,]
+  for (i in unique(gnDatID$V2)){
+    gnDatTemp <- gnDat[gnDat$V2==i,]
+    gnDatTempI <- gnDatTemp[rep(row.names(gnDatTemp), gnDatTemp$V6),]
+    if (length(gnDatTemp$V2)>3){ #Enough to form a density function
+        ggp <- ggplot(data=gnDatTempI)+
+          geom_line(aes(CDR3Len), stat='density')+
+          theme_classic()+
+          labs(title=paste(i, '\t\t Num. Reads =', sum(gnDatTemp$V6), sep=''), x='Length of CDR3 Sequences', y='Density')
+        ggsave(paste(JGeneOutputPath, '/',ID, '-', i, '.pdf', sep = ''), 
+              ggp, width = 10, height = 10, units = c('cm'))
+  
+    }
+  }
+}
+#V Gene
+for (i in unique(gnDat$ID)){
+gnDat.expanded <- gnDat[gnDat$ID==i,]
+gnDat.expanded <- gnDat.expanded[rep(row.names(gnDat.expanded), gnDat.expanded$V6),]
+gnDat.expanded <- gnDat.expanded %>% mutate(V1 = reorder(V1, CDR3Len, median))
+
+  green <- brewer.pal(9,'Pastel1')
+  colfunc <- colorRampPalette(green)
+  col <- colfunc(length(unique(gnDat$V1)))
+  ggp <- ggplot(gnDat.expanded, aes(x = CDR3Len, y=V1))+
+    geom_joy(scale = 4, aes(fill=V1))+theme_joy()+
+    scale_fill_manual(values = col) +
+    scale_y_discrete(expand = c(0.01, 0))+
+    scale_x_continuous(expand = c(0,0))+
+    theme(legend.position = 'none')+
+    labs(x='CDR3 Length', y = 'J Gene')
+  
+  ggsave(paste(gnOutputPath, '/', i, '-', 'VGenes', '.pdf', sep = ''), 
+              ggp, width = 12, height = 50, units = c('cm'))
+  
+  
+  #J Genes
+  gnDat.expanded <- gnDat.expanded %>% mutate(V2 = reorder(V2, CDR3Len, median))
+  
+  green <- brewer.pal(9,'Pastel1')
+  colfunc <- colorRampPalette(green)
+  col <- colfunc(length(unique(gnDat$V2)))
+  ggp <- ggplot(gnDat.expanded, aes(x = CDR3Len, y=V2))+
+    geom_joy(scale = 4, aes(fill=V2))+theme_joy()+
+    scale_fill_manual(values = col) +
+    scale_y_discrete(expand = c(0.01, 0))+
+    scale_x_continuous(expand = c(0,0))+
+    theme(legend.position = 'none')+
+    labs(x='CDR3 Length', y = 'J Gene')
+  
+  ggsave(paste(gnOutputPath, '/', i, '-', 'JGenes', '.pdf', sep = ''), 
+              ggp, width = 12, height = 50, units = c('cm'))
+}
+    ```
+
+
+#CDR3 Similarity
+
+```{r}
+cdr3SimilarityOutputPath <- paste(plotsOutputPath,'/CDR3Similarity',sep='')
+dir.create(cdr3SimilarityOutputPath)
+indCdr3SimilarityOutputPath <- paste(cdr3SimilarityOutputPath,'/IndividualSimilarityPlots',sep='')
+dir.create(indCdr3SimilarityOutputPath)
+indCdr3AntSimilarityOutputPath <- paste(cdr3SimilarityOutputPath,'/AntigenSpecificIndividualSimilarityPlots',sep='')
+dir.create(indCdr3AntSimilarityOutputPath)
+indCdr3DendoOutputPath <- paste(cdr3SimilarityOutputPath,'/IndividualDendogramPlots',sep='')
+dir.create(indCdr3DendoOutputPath)
+
+#By patient
+top <- 100 #top x clones
+for (i in unique(cdr3Dat$ID)){
+  cdr3DatTemp <- cdr3Dat[cdr3Dat$ID==i,]
+  cdr3DatTemp <- cdr3DatTemp[order(-cdr3DatTemp$V2),]
+  if (length(cdr3DatTemp$V1)>=top){
+    cdr3DatTemp <- cdr3DatTemp[1:top,]
+    }
+  
+  #Jaro-Winkler Distance
+  distanceModels <- stringdistmatrix(cdr3DatTemp$V1, cdr3DatTemp$V1, method = 'jw')
+  rownames(distanceModels) <- cdr3DatTemp$V1
+  colnames(distanceModels) <- cdr3DatTemp$V1
+  hc <- hclust(as.dist(distanceModels)) #hierarchical clustering
+  dend <- as.dendrogram(hc)  #hierarchical clustering
+  pdf(paste(cdr3SimilarityOutputPath, '/', i, '-CDR3Dendogram', '.pdf', sep = ''), width = 15, height = 15)
+  plot(as.phylo(hc), type='fan')
+  dev.off()
+  
+  pdf(paste(cdr3SimilarityOutputPath, '/', i, '-CDR3Similarity', '.pdf', sep = ''), width = 20, height = 20)
+  heatmap.2(distanceModels, trace='none',breaks=seq(0, 1, length.out=101), margins = c(10,10))
+  dev.off()
+}
+
+#By patient & month
+top <- 100 #top x clones
+for (i in unique(cdr3Dat$ID)){
+  for (j in unique(cdr3Dat$month[cdr3Dat$ID==i])){
+    cdr3DatTemp <- cdr3Dat[cdr3Dat$ID==i & cdr3Dat$month==j,]
+    cdr3DatTemp <- cdr3DatTemp[order(-cdr3DatTemp$V2),]
+    if (length(cdr3DatTemp$V1)>=top){
+      cdr3DatTemp <- cdr3DatTemp[1:top,]
+      }
+    
+    #Jaro-Winkler Distance
+    distanceModels <- stringdistmatrix(cdr3DatTemp$V1, cdr3DatTemp$V1, method = 'jw')
+    rownames(distanceModels) <- cdr3DatTemp$V1
+    colnames(distanceModels) <- cdr3DatTemp$V1
+    hc <- hclust(as.dist(distanceModels)) #hierarchical clustering
+    dend <- as.dendrogram(hc)  #hierarchical clustering
+    pdf(paste(indCdr3DendoOutputPath, '/', i,'-',j, '-CDR3Dendogram', '.pdf', sep = ''), width = 15, height = 15)
+    plot(as.phylo(hc), type='fan')
+    dev.off()
+    
+    pdf(paste(indCdr3SimilarityOutputPath, '/', i,'-',j, '-CDR3Similarity', '.pdf', sep = ''), width = 20, height = 20)
+    heatmap.2(distanceModels, trace='none',breaks=seq(0, 1, length.out=101), margins = c(10,10))
+    dev.off()
+    pdf(paste(indCdr3AntSimilarityOutputPath, '/', i,'-',j, '-CDR3Similarity', '.pdf', sep = ''), width = 20, height = 20)
+    heatmap.2(distanceModels, trace='none',breaks=seq(0, 1, length.out=101), margins = c(10,10), labRow=paste(cdr3DatTemp$antigen,cdr3DatTemp$V2), labCol=paste(cdr3DatTemp$antigen,cdr3DatTemp$V2))
+    dev.off()
+  }
+}
+
+```
+
+#Productives/Nonproductives
+
+```{r}
+npOutputPath <- paste(plotsOutputPath,'/NonproductiveAnalysis',sep='')
+dir.create(npOutputPath)
+npCauseOutputPath <- paste(npOutputPath,'/NonproductiveCause',sep='')
+dir.create(npCauseOutputPath)
+npCauseOutputPathMonth <- paste(npCauseOutputPath,'/NonproductiveCauseMonth',sep='')
+dir.create(npCauseOutputPathMonth)
+npTimeOutputPath <- paste(npOutputPath,'/NonproductiveTime',sep='')
+dir.create(npTimeOutputPath)
+npVJOutputPath <- paste(npOutputPath,'/NonproductiveVJGene',sep='')
+dir.create(npVJOutputPath)
+
+
+#By ID
+if (numberChains==2){
+  for (i in unique(npgnDat$ID)){
+    npgnDatFreq <- data.frame(character(),character(),character())
+    for (j in unique(npgnDat$chain[npgnDat$ID==i])){
+      npgnDatTemp <- npgnDat.expanded[npgnDat.expanded$ID==i & npgnDat.expanded$chain==j,]
+      npgnDatTemp <- as.data.frame(table(npgnDatTemp$Stop))
+      npgnDatTemp$chain <- j
+      npgnDatFreq <- rbind(npgnDatFreq, npgnDatTemp)
+    }
+
+    ggp <- ggplot(data = npgnDatFreq, aes(x = reorder(Var1, -Freq), fill = chain, y = Freq))+
+      geom_bar(stat = 'identity', position = 'identity', alpha = .7)+
+      labs(x='Nonproductive Cause', y = 'Frequency', title = paste(i, 'Nonproductive CDR3s'))+
+      scale_fill_grey()+
+      theme_classic()
+
+  ggsave(paste(npCauseOutputPath, '/', i, '.pdf', sep = ''), 
+         ggp, width = 22, height = 10, units = c('cm'))
+  
+  #Plots data over time
+  npgnDatTime <- data.frame(character(),character(),character(), stringsAsFactors = F)
+  
+  #By month
+  for (k in unique(npgnDat$month[npgnDat$ID==i])){
+    npgnDatFreq <- data.frame(character(),character(),character())
+    for (j in unique(npgnDat$chain[npgnDat$ID==i & npgnDat$month==k])){
+      npgnDatTemp <- npgnDat.expanded[npgnDat.expanded$ID==i & npgnDat.expanded$chain==j & npgnDat.expanded$month==k,]
+      npgnDatTemp <- as.data.frame(table(npgnDatTemp$Stop))
+      npgnDatTemp$chain <- j
+      npgnDatFreq <- rbind(npgnDatFreq, npgnDatTemp)
+
+      ggp <- ggplot(data = npgnDatFreq, aes(x = reorder(Var1, -Freq), fill = chain, y = Freq))+
+        geom_bar(stat = 'identity', position = 'identity', alpha = .7)+
+        labs(x='Nonproductive Cause', y = 'Frequency', title = paste(i, '-', k, 'Nonproductive CDR3s'))+
+        scale_fill_grey()+
+        theme_classic()
+      
+      ggsave(paste(npCauseOutputPathMonth, '/', i, '-', k, '.pdf', sep = ''), 
+         ggp, width = 22, height = 10, units = c('cm'))
+    }
+  }
+  }
+}
+
+#% nonproductive/time
+for (i in unique(npgnDat$ID)){
+  tempP <- c() #Percentage nonproductive
+  tempM <- c() #Month
+  tempC <- c() #Chain
+  for (j in unique(npgnDat$chain[npgnDat$ID==i])){
+    for (k in unique(npgnDat$month[npgnDat$ID==i & npgnDat$chain==j])){
+      tempP <- append(tempP, (sum(npgnDat$V6[npgnDat$ID==i & npgnDat$chain==j & npgnDat$month==k])/
+                                sum(cdr3Dat$V2[cdr3Dat$ID==i & cdr3Dat$chain==j & cdr3Dat$month==k]))*100)
+      tempM <- append(tempM, k)
+      tempC <- append(tempC, j)
+    }
+  }
+  temp <- data.frame(tempP, tempM, tempC)
+  ggp <- ggplot(data = temp)+
+    geom_point(aes(x=tempM, y=tempP, group=tempC, colour=tempC))+
+    geom_line(aes(x=tempM, y=tempP, group=tempC, colour=tempC))+
+    labs(x='Month', y='% of Total Reads Nonproductive', colour='Chain')+
+    theme_classic()
+  
+  ggsave(paste(npTimeOutputPath, '/', i, '.pdf', sep = ''), 
+         ggp, width = 9, height = 7, units = c('cm'))
+
+}
+
+
+
+#Nonproductives by V/J gene
+gnDat$V1 <- reorder(gnDat$V1, -gnDat$V6)
+gnDat.expanded <- gnDat[rep(row.names(gnDat), gnDat$V6),]
+npgnDat$V1 <- reorder(npgnDat$V1, -npgnDat$V6)
+npgnDat.expanded <- npgnDat[rep(row.names(npgnDat), npgnDat$V6),]
+
+gnDat.expanded$CDR3Len <- 'Productive'
+npgnDat.expanded$CDR3Len <- 'Nonproductive'
+
+names(gnDat.expanded)[13] <- 'Status'
+names(npgnDat.expanded) <- names(gnDat.expanded)
+
+temp <- rbind(gnDat.expanded, npgnDat.expanded)
+temp$vLen <- NA
+temp$jLen <- NA
+for (i in unique(temp$ID)){
+  for (j in unique(temp$V1[temp$ID==i])){
+    temp$vLen[temp$V1==j & temp$ID==i] <- length(temp$vLen[temp$V1==j & temp$ID==i])
+  }
+    for (j in unique(temp$V2[temp$ID==i])){
+    temp$jLen[temp$V2==j & temp$ID==i] <- length(temp$jLen[temp$V2==j & temp$ID==i])
+  }
+}
+
+for (i in unique(temp$ID)){
+  for (j in unique(temp$chain[temp$ID==i])){
+   temptemp <- temp[temp$ID==i & temp$chain==j,]
+   
+   #V
+   ggp <- ggplot(data = temptemp, aes(x = reorder(V1, -vLen), fill = Status))+
+      geom_bar(position='identity',alpha = .7)+
+      labs(x='', y = 'Frequency', title = paste(i, 'Chain =', j, '  CDR3 Productivity - V Genes'), fill='')+
+      scale_fill_grey()+
+      scale_y_log10(breaks=c(10,100,1000,2000,3000,5000,10000))+
+      theme_classic()+
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+   
+   ggsave(paste(npVJOutputPath, '/', i, '-', j, '-VGenes', '.pdf', sep = ''), 
+         ggp, width = 20, height = 12, units = c('cm'))
+   
+   #J
+   ggp <- ggplot(data = temptemp, aes(x = reorder(V2, -jLen), fill = Status))+
+      geom_bar(position='identity',alpha = .7)+
+      labs(x='', y = 'Frequency', title = paste(i, 'Chain =', j, '  CDR3 Productivity - J Genes'), fill='')+
+      scale_fill_grey()+
+      scale_y_log10(breaks=c(10,100,1000,2000,3000,5000,10000))+
+      theme_classic()+
+      theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+   
+   ggsave(paste(npVJOutputPath, '/', i, '-', j, '-JGenes', '.pdf', sep = ''), 
+         ggp, width = 20, height = 12, units = c('cm'))
+
+   
+  }
+}
+```
+
+```{r}
+#Summary - number of reads/time
+summaryOutputPath <- paste(plotsOutputPath,'/CDR3Frequency',sep='')
+dir.create(summaryOutputPath)
+
+for (i in unique(cdr3Dat$ID)){
+  tempM <- c()
+  tempP <- c()
+  tempC <- c()
+  for (j in unique(cdr3Dat$month[cdr3Dat$ID==i])){
+    for (k in unique(cdr3Dat$chain[cdr3Dat$ID==i & cdr3Dat$month==j])){
+      tempM <- append(tempM, j) 
+      tempC <- append(tempC, k)
+      tempP <- append(tempP, sum(cdr3Dat$V2[cdr3Dat$ID==i & cdr3Dat$month==j & cdr3Dat$chain==k]))
+    
+    }
+  }
+  temp <- data.frame(tempP, tempM, tempC)
+  ggp <- ggplot(data = temp)+
+    geom_point(aes(x=tempM, y=tempP, group=tempC, colour=tempC))+
+    geom_line(aes(x=tempM, y=tempP, group=tempC, colour=tempC))+
+    labs(x='Month', y='Number of Reads', colour='Chain')+
+    theme_classic()
+  
+  ggsave(paste(summaryOutputPath, '/', i, '.pdf', sep = ''), 
+         ggp, width = 9, height = 7, units = c('cm'))
+
+}
+
+```
+
+
+```{r}
+#Diversity Metrics
+
+divOutputPath <- paste(plotsOutputPath,'/Diversity',sep='')
+dir.create(divOutputPath)
+divGiniOutputPath <- paste(divOutputPath, '/Gini', sep='')
+dir.create(divGiniOutputPath)
+divShannonOutputPath <- paste(divOutputPath, '/Shannon', sep='')
+dir.create(divShannonOutputPath)
+divSimpsonOutputPath <- paste(divOutputPath, '/Simpson', sep='')
+dir.create(divSimpsonOutputPath)
+
+#Gini Index
+
+for (i in unique(cdr3Dat$ID)){
+  tempC <- c()
+  tempM <- c()
+  tempP <- c()
+  tempSimp <- c()
+  tempShan <- c()
+  for (j in unique(cdr3Dat$month[cdr3Dat$ID==i])){
+   for (k in unique(cdr3Dat$chain[cdr3Dat$ID==i & cdr3Dat$month==j])){
+     temp <- cdr3Dat$V2[cdr3Dat$chain==k & cdr3Dat$month==j & cdr3Dat$ID==i]
+     tempC <- append(tempC, k)
+     tempM <- append(tempM, j)
+     tempP <- append(tempP, ineq(temp))
+     tempSimp <- c(tempSimp, diversity(temp, index = 'simpson'))
+     tempShan <- c(tempShan, diversity(temp, index = 'shannon', base = 2))
+   }
+  }
+  #Gini
+  temp <- data.frame(tempP, tempM, tempC)
+  ggp <- ggplot(data = temp)+
+    geom_point(aes(x=tempM, y=tempP, group=tempC, colour=tempC))+
+    geom_line(aes(x=tempM, y=tempP, group=tempC, colour=tempC))+
+    scale_y_continuous(limits=c(0,1))+
+    labs(x='Month', y='Gini Coefficient', colour='Chain', title=i)+
+    theme_classic()+
+    theme(plot.title = element_text(hjust = 1))
+  
+  ggsave(paste(divGiniOutputPath, '/', i, '.pdf', sep = ''), 
+         ggp, width = 9, height = 7, units = c('cm'))
+
+  #Simpson
+  temp <- data.frame(tempSimp, tempM, tempC)
+  ggp <- ggplot(data = temp)+
+    geom_point(aes(x=tempM, y=tempSimp, group=tempC, colour=tempC))+
+    geom_line(aes(x=tempM, y=tempSimp, group=tempC, colour=tempC))+
+    labs(x='Month', y='Simpson Index', colour='Chain', title=i)+
+    theme_classic()+
+    theme(plot.title = element_text(hjust = 1))
+  
+  ggsave(paste(divSimpsonOutputPath, '/', i, '.pdf', sep = ''), 
+         ggp, width = 9, height = 7, units = c('cm'))
+
+  #Shannon
+  temp <- data.frame(tempShan, tempM, tempC)
+  ggp <- ggplot(data = temp)+
+    geom_point(aes(x=tempM, y=tempShan, group=tempC, colour=tempC))+
+    geom_line(aes(x=tempM, y=tempShan, group=tempC, colour=tempC))+
+    labs(x='Month', y='Shannon Entropy', colour='Chain', title=i)+
+    theme_classic()+
+    theme(plot.title = element_text(hjust = 1))
+  
+  ggsave(paste(divShannonOutputPath, '/', i, '.pdf', sep = ''), 
+         ggp, width = 9, height = 7, units = c('cm'))
+
+  
+}
+
+```
+
+
+```{r}
+#Outside of loop, save summaryStats.csv (1 row for each sample)
+
+exitStats <- 'Successful'
+exitStats.time <- proc.time() - exitStats.time
+exitStats.time <- round(exitStats.time[3], digits = 1)
+```
+
+
+#Generate summary stats for each file, save to tcrStats
+    
+    
+#Generate figures
+
+
+#Save figures
+    
+    
+#Blast against VDJDB?
+  #Report Matches
+
+
+
+Send the run report by email to the user specified email address
+
+```{r}
+if (sendEmail == TRUE){
+  
+  body <- paste('Run ID = ',runID, '\n\n',
+                '---------------------------------------------------------------------------------------------------------\n',
+                'File Read Status = ', exitRead, '\t\t\t Run Time = ', exitRead.time, ' seconds \n\n',
+                'Demultiplexor Run Status = ', exitDemultiplexor, '\t\t Run Time = ', exitDemultiplexor.time, ' seconds \n\n',
+                'Decombinator Run Status = ', exitDecombinator, '\t\t Run Time = ', exitDecombinator.time, ' seconds \n\n',
+                'Collapsinator Run Status = ', exitCollapsinator, '\t\t Run Time = ', exitCollapsinator.time, ' seconds \n\n',
+                'CDR3 Translator Run Status = ', exitCDR3Translator, '\t\t Run Time = ', exitCDR3Translator.time, ' seconds \n\n',
+                'CDR3 Translator Run Status = ', exitGNTranslator, '\t\t Run Time = ', exitGNTranslator.time, ' seconds \n\n',
+                'Analysis Status = ', exitStats, '\t\t\t\t Run Time = ', exitStats.time, ' seconds \n',
+                '---------------------------------------------------------------------------------------------------------\n\n',
+                'Total Runtime = ', round(exitRead.time + exitDemultiplexor.time + 
+                  exitDecombinator.time + exitCollapsinator.time + exitCDR3Translator.time + exitStats.time, digits = 1), ' seconds \n\n',
+                sep = '')
+  
+  
+  sender <- "autotcrkleinlab@gmail.com"
+  recipients <- c(emailAddress)
+  send.mail(from = sender,
+            to = recipients,
+            subject = paste('AutoTCR Run Report - ', Sys.time(), ' - Run ID = ' ,runID, sep = ''),
+            body = body,
+            smtp = list(host.name = "smtp.gmail.com", port = 465, 
+                        user.name = "autotcrkleinlab@gmail.com",            
+                        passwd = "dw5SqmW8", ssl = TRUE),
+            verbost=TRUE,
+            authenticate = TRUE,
+            send = TRUE)
+  
+}
+```
+

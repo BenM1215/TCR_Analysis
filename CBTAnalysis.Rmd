@@ -1,0 +1,1904 @@
+---
+title: "CBTAnalysis"
+author: "Ben Margetts and Athina"
+date: "22/01/2018"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+# Files are stored in Storage to save space
+
+# Load libraries
+```{r}
+library(data.table)
+library(zoo)
+library(plyr)
+library(scales)
+library(ggplot2)
+library(ggthemes)
+library(dplyr)
+library(plotly)
+library(pracma)
+library(Hmisc)
+library(rpart)
+library(survminer)
+library(knitr)
+library(mailR)
+library(grid)
+library(stringr)
+library(ggrepel)
+library(ggjoy)
+library(RColorBrewer)
+library(stringdist)
+library(ape)
+library(dendextend)
+library(reshape2)
+library(gplots)
+library(ineq)
+library(vegan)
+library(Rtsne)
+```
+
+Next, a multiplot function to produce ggplot grid plots.
+```{r}
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  require(grid)
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+
+# Load in subsampled .cdr3 files
+ -> Get ID and month from filenames
+```{r}
+wd <- "/home/ben/Desktop/CBTSubsampleAnalysisPipeline23Nov17/CBTAnalysisOct17/Input"
+wd.output <- "/home/ben/Desktop/CBTSubsampleAnalysisPipeline23Nov17/CBTAnalysisOct17/Output"
+setwd(wd)
+
+#ID, month, chain, CDR3, freq
+ID <- vector()
+month <- vector()
+chain <- vector()
+V1 <- vector() #CDR3s
+V2 <- vector() #Freqs
+
+files <- list.files(wd, pattern = ".csv")
+
+for (file in files){
+  temp.file <- read.csv(file, stringsAsFactors = F, header = T)
+  
+  file <- strsplit(file, "_")[[1]]
+  chain <- append(chain, rep(file[2], length(temp.file$Seq)))
+  
+  file <- strsplit(file[3], "-")[[1]][1]
+  month <- append(month, rep(as.numeric(gsub("[[:alpha:]]", "", file[1])), length(temp.file$Seq)))
+  ID <- append(ID, rep(gsub("[[:digit:]]", "", file[1]), length(temp.file$Seq)))
+  
+  V1 <- append(V1, unlist(temp.file$Seq))
+  V2 <- append(V2, unlist(temp.file$Freq))
+  
+}
+
+month[month > 100 & month < 1000] <- 40
+month[month == 1000] <- -10
+
+dat <- data.frame(ID, month, chain, V1, V2, stringsAsFactors = F)
+
+dat$ID[dat$ID == "AmAlFCDfour" | dat$ID == "AmAlFCDeight"] <- "AmAlF"
+```
+
+# Read in clinical data
+```{r}
+clinwd <- "/home/ben/Desktop/CBTSubsampleAnalysisPipeline23Nov17/CBTAnalysisOct17"
+setwd(clinwd)
+
+dat.clin <- read.csv("CBT_for BenMod.csv", stringsAsFactors = F, header = T)
+dat.clin2 <- read.csv("Full_Patient_DetailsMod.csv", stringsAsFactors = F, header = T)
+```
+
+# Change ID from letters to alphabetic
+```{r}
+# AAF
+dat.clin2$ID[dat.clin2$ID == 'AAF'] <- 'A'
+dat.clin$ID[dat.clin$ID == 'AAF'] <- 'A'
+dat$ID[dat$ID == 'AAF'] <- 'A'
+
+# AAM
+dat.clin2$ID[dat.clin2$ID == 'AAM'] <- 'B'
+dat.clin$ID[dat.clin$ID == 'AAM'] <- 'B'
+dat$ID[dat$ID == 'AAM'] <- 'B'
+
+# AKM
+dat.clin2$ID[dat.clin2$ID == 'AKM'] <- 'C'
+dat.clin$ID[dat.clin$ID == 'AKM'] <- 'C'
+dat$ID[dat$ID == 'AKM'] <- 'C'
+
+# AmAlF
+dat.clin2$ID[dat.clin2$ID == 'AmAlF'] <- 'D'
+dat.clin$ID[dat.clin$ID == 'AmAlF'] <- 'D'
+dat$ID[dat$ID == 'AmAlF'] <- 'D'
+
+# AmAuF
+dat.clin2$ID[dat.clin2$ID == 'AmAuF'] <- 'E'
+dat.clin$ID[dat.clin$ID == 'AmAuF'] <- 'E'
+dat$ID[dat$ID == 'AmAuF'] <- 'E'
+
+# ANF
+dat.clin2$ID[dat.clin2$ID == 'ANF'] <- 'F'
+dat.clin$ID[dat.clin$ID == 'ANF'] <- 'F'
+dat$ID[dat$ID == 'ANF'] <- 'F'
+
+# DSF
+dat.clin2$ID[dat.clin2$ID == 'DSF'] <- 'G'
+dat.clin$ID[dat.clin$ID == 'DSF'] <- 'G'
+dat$ID[dat$ID == 'DSF'] <- 'G'
+
+# HBF
+dat.clin2$ID[dat.clin2$ID == 'HBF'] <- 'H'
+dat.clin$ID[dat.clin$ID == 'HBF'] <- 'H'
+dat$ID[dat$ID == 'HBF'] <- 'H'
+
+# LKM
+dat.clin2$ID[dat.clin2$ID == 'LKM'] <- 'I'
+dat.clin$ID[dat.clin$ID == 'LKM'] <- 'I'
+dat$ID[dat$ID == 'LKM'] <- 'I'
+
+# MLM
+dat.clin2$ID[dat.clin2$ID == 'MLM'] <- 'J'
+dat.clin$ID[dat.clin$ID == 'MLM'] <- 'J'
+dat$ID[dat$ID == 'MLM'] <- 'J'
+
+# RBM
+dat.clin2$ID[dat.clin2$ID == 'RBM'] <- 'K'
+dat.clin$ID[dat.clin$ID == 'RBM'] <- 'K'
+dat$ID[dat$ID == 'RBM'] <- 'K'
+
+# RPM
+dat.clin2$ID[dat.clin2$ID == 'RPM'] <- 'L'
+dat.clin$ID[dat.clin$ID == 'RPM'] <- 'L'
+dat$ID[dat$ID == 'RPM'] <- 'L'
+
+# RYF
+dat.clin2$ID[dat.clin2$ID == 'RYF'] <- 'M'
+dat.clin$ID[dat.clin$ID == 'RYF'] <- 'M'
+dat$ID[dat$ID == 'RYF'] <- 'M'
+
+# WGM
+dat.clin2$ID[dat.clin2$ID == 'WGM'] <- 'N'
+dat.clin$ID[dat.clin$ID == 'WGM'] <- 'N'
+dat$ID[dat$ID == 'WGM'] <- 'N'
+
+# YOM
+dat.clin2$ID[dat.clin2$ID == 'YOM'] <- 'O'
+dat.clin$ID[dat.clin$ID == 'YOM'] <- 'O'
+dat$ID[dat$ID == 'YOM'] <- 'O'
+
+# ZRM
+dat.clin2$ID[dat.clin2$ID == 'ZRM'] <- 'P'
+dat.clin$ID[dat.clin$ID == 'ZRM'] <- 'P'
+dat$ID[dat$ID == 'ZRM'] <- 'P'
+
+```
+
+
+# time from tx vs. diversities
+```{r}
+#Diversity Metrics
+
+#divOutputPath <- paste(plotsOutputPath,'/Diversity',sep='')
+#dir.create(divOutputPath)
+#divGiniOutputPath <- paste(divOutputPath, '/Gini', sep='')
+#dir.create(divGiniOutputPath)
+#divShannonOutputPath <- paste(divOutputPath, '/Shannon', sep='')
+#dir.create(divShannonOutputPath)
+#divSimpsonOutputPath <- paste(divOutputPath, '/Simpson', sep='')
+#dir.create(divSimpsonOutputPath)
+
+# Diversity metrics
+tempID <- c()
+tempC <- c()
+tempM <- c()
+tempP <- c()
+tempSimp <- c()
+tempShan <- c()
+
+# Makes data frame of diversity metrics
+for (i in unique(dat$ID)){
+  for (j in unique(dat$month[dat$ID==i])){
+   for (k in unique(dat$chain[dat$ID==i & dat$month==j])){
+     tempID <- append(tempID, i)
+     dat.temp <- dat$V2[dat$chain==k & dat$month==j & dat$ID==i]
+     tempC <- append(tempC, k)
+     tempM <- append(tempM, j)
+     tempP <- append(tempP, ineq(dat.temp))
+     tempSimp <- c(tempSimp, diversity(dat.temp, index = 'simpson'))
+     tempShan <- c(tempShan, diversity(dat.temp, index = 'shannon', base = 2))
+   }
+  }
+}
+div <- data.frame(tempID, tempP, tempM, tempC, tempSimp, tempShan, stringsAsFactors = F)
+```
+
+# Did the subsampling work?
+```{r}
+sizes <- vector()
+for (i in unique(dat$ID)){
+  for (j in unique(dat$month[dat$ID==i])){
+    for (k in unique(dat$chain[dat$ID==i & dat$month==j])){
+      sizes <- append(sizes, sum(dat$V2[dat$ID==i & dat$month==j & dat$chain==k]))
+    }
+  }
+}
+print(unique(sizes))
+```
+
+time from tx vs. diversities - alpha - colour by ID
+```{r}
+wd.diversity <- paste(wd.output,'/DiversityTime', sep='')
+dir.create(wd.diversity)
+setwd(wd.diversity)
+
+#Gini
+ggp <- ggplot(data = div[div$tempC=="alpha",])+
+  geom_point(aes(x = tempM, y = tempP, group = tempID, colour = tempID))+
+  geom_line(aes(x = tempM, y = tempP, group = tempID, colour = tempID))+
+  scale_y_continuous(limits=c(0,1))+
+  labs(x = 'Month', y = 'Gini Coefficient', colour = 'ID', title = "Gini Coefficient")+
+  theme_classic()+
+  geom_vline(xintercept = -5, linetype = "dashed")+
+  geom_vline(xintercept = 35, linetype = "dashed")+
+  theme(plot.title = element_text(hjust = 1))+
+  scale_x_continuous(breaks = c(-10,1,3,6,8,12,17,19,22,30,40), labels = c("Cords", "1", "3", "6", "8", "12", "17", "19", "22", "30", "Controls"))
+
+ggsave(paste(wd.diversity, '/', 'GiniAlpha', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+#Simpson
+#temp <- data.frame(tempSimp, tempM, tempC)
+ggp <- ggplot(data = div[div$tempC=="alpha",])+
+  geom_point(aes(x = tempM, y = tempSimp, group = tempID, colour = tempID))+
+  geom_line(aes(x = tempM, y = tempSimp, group = tempID, colour = tempID))+
+  labs(x='Month', y='Simpson Index', colour='ID', title = "Simpson's Diversity Index")+
+  theme_classic()+
+  geom_vline(xintercept = -5, linetype = "dashed")+
+  geom_vline(xintercept = 35, linetype = "dashed")+
+  theme(plot.title = element_text(hjust = 1))+
+  scale_x_continuous(breaks = c(-10,1,3,6,8,12,17,19,22,30,40), labels = c("Cords", "1", "3", "6", "8", "12", "17", "19", "22", "30", "Controls"))
+
+ggsave(paste(wd.diversity, '/', 'SimpsonAlpha', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+#Shannon
+#temp <- data.frame(tempShan, tempM, tempC)
+#ggp <- ggplot(data = div[div$tempC=="beta",])+
+ggp <- ggplot(data = div[div$tempC=="alpha",])+
+  geom_point(aes(x = tempM, y = tempShan, group = tempID, colour = tempID))+
+  geom_line(aes(x = tempM, y = tempShan, group = tempID, colour = tempID))+
+  labs(x='Month', y = 'Shannon Entropy', colour = 'ID', title = 'Shannon Entropy')+
+  theme_classic()+
+  geom_vline(xintercept = -5, linetype = "dashed")+
+  geom_vline(xintercept = 35, linetype = "dashed")+
+  theme(plot.title = element_text(hjust = 1))+
+  scale_x_continuous(breaks = c(-10,1,3,6,8,12,17,19,22,30,40), labels = c("Cords", "1", "3", "6", "8", "12", "17", "19", "22", "30", "Controls"))
+
+ggsave(paste(wd.diversity, '/', 'ShannonAlpha', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+  
+```
+
+
+time from tx vs. diversities - beta - colour by ID
+```{r}
+div$tempID2 <- as.factor(div$tempID)
+#Gini
+ggp <- ggplot(data = div[div$tempC=="beta",])+
+  geom_point(aes(x = tempM, y = tempP, group = tempID, colour = tempID, shape = tempID))+
+  geom_line(aes(x = tempM, y = tempP, group = tempID, colour = tempID))+
+  scale_shape_manual(name = 'ID', values=1:length(div$tempID))+
+  scale_y_continuous(limits=c(0,1))+
+  labs(x = 'Month', y = 'Gini Coefficient', colour = 'ID', shape = 'ID', title = "Gini Coefficient")+
+  theme_classic()+
+  geom_vline(xintercept = -5, linetype = "dashed")+
+  geom_vline(xintercept = 35, linetype = "dashed")+
+  theme(plot.title = element_text(hjust = 1), legend.title = element_blank())+
+  scale_x_continuous(breaks = c(-10,0,1,3,4,6,12,17,19,22,30,40), labels = c("Cords", "0", "1", "3", "4", "6", "12", "17", "19", "22", "30", "Controls"))
+
+ggsave(paste(wd.diversity, '/', 'GiniBeta', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+#Simpson
+#temp <- data.frame(tempSimp, tempM, tempC)
+ggp <- ggplot(data = div[div$tempC=="beta",])+
+  geom_point(aes(x = tempM, y = tempSimp, group = tempID, colour = tempID))+
+  geom_line(aes(x = tempM, y = tempSimp, group = tempID, colour = tempID))+
+  labs(x='Month', y='Simpson Index', colour='ID', title = "Simpson's Diversity Index")+
+  theme_classic()+
+  geom_vline(xintercept = -5, linetype = "dashed")+
+  geom_vline(xintercept = 35, linetype = "dashed")+
+  theme(plot.title = element_text(hjust = 1))+
+  scale_x_continuous(breaks = c(-10,1,3,6,8,12,17,19,22,30,40), labels = c("Cords", "1", "3", "6", "8", "12", "17", "19", "22", "30", "Controls"))
+
+ggsave(paste(wd.diversity, '/', 'SimpsonBeta', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+#Shannon
+#temp <- data.frame(tempShan, tempM, tempC)
+#ggp <- ggplot(data = div[div$tempC=="beta",])+
+ggp <- ggplot(data = div[div$tempC=="beta",])+
+  geom_point(aes(x = tempM, y = tempShan, group = tempID, colour = tempID, shape = tempID))+
+  geom_line(aes(x = tempM, y = tempShan, group = tempID, colour = tempID))+
+  scale_shape_manual(name = 'ID', values=1:length(div$tempID))+
+  labs(x='Month', y = 'Shannon Entropy', colour = 'ID', shape = 'ID', title = 'Shannon Entropy')+
+  theme_classic()+
+  geom_vline(xintercept = -5, linetype = "dashed")+
+  geom_vline(xintercept = 35, linetype = "dashed")+
+  theme(plot.title = element_text(hjust = 1), legend.title = element_blank())+
+  scale_x_continuous(breaks = c(-10,0,1,3,4,6,12,17,19,22,30,40), labels = c("Cords", "0", "1", "3", "4", "6", "12", "17", "19", "22", "30", "Controls"))
+  
+ggsave(paste(wd.diversity, '/', 'ShannonBeta', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+```
+
+time from tx vs. diversities - colour by chain
+```{r}
+#Gini
+div$tempIDC <- paste(div$tempID, div$tempC)
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = tempM, y = tempP, group = tempIDC, colour = tempC))+
+  geom_line(aes(x = tempM, y = tempP, group = tempIDC, colour = tempC))+
+  scale_y_continuous(limits=c(0,1))+
+  labs(x = 'Month', y = 'Gini Coefficient', colour = 'ID', title = "Gini Coefficient")+
+  theme_classic()+
+  geom_vline(xintercept = -5, linetype = "dashed")+
+  geom_vline(xintercept = 35, linetype = "dashed")+
+  theme(plot.title = element_text(hjust = 1))+
+  scale_x_continuous(breaks = c(-10,1,3,6,8,12,17,19,22,30,40), labels = c("Cords", "1", "3", "6", "8", "12", "17", "19", "22", "30", "Controls"))
+
+ggsave(paste(wd.diversity, '/', 'Gini', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+#Simpson
+#temp <- data.frame(tempSimp, tempM, tempC)
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = tempM, y = tempSimp, group = tempIDC, colour = tempC))+
+  geom_line(aes(x = tempM, y = tempSimp, group = tempIDC, colour = tempC))+
+  labs(x='Month', y='Simpson Index', colour='ID', title = "Simpson's Diversity Index")+
+  theme_classic()+
+  geom_vline(xintercept = -5, linetype = "dashed")+
+  geom_vline(xintercept = 35, linetype = "dashed")+
+  theme(plot.title = element_text(hjust = 1))+
+  scale_x_continuous(breaks = c(-10,1,3,6,8,12,17,19,22,30,40), labels = c("Cords", "1", "3", "6", "8", "12", "17", "19", "22", "30", "Controls"))
+
+ggsave(paste(wd.diversity, '/', 'Simpson', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+#Shannon
+#temp <- data.frame(tempShan, tempM, tempC)
+#ggp <- ggplot(data = div[div$tempC=="beta",])+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = tempM, y = tempShan, group = tempIDC, colour = tempC))+
+  geom_line(aes(x = tempM, y = tempShan, group = tempIDC, colour = tempC))+
+  labs(x='Month', y = 'Shannon Entropy', colour = 'ID', title = 'Shannon Entropy')+
+  theme_classic()+
+  geom_vline(xintercept = -5, linetype = "dashed")+
+  geom_vline(xintercept = 35, linetype = "dashed")+
+  theme(plot.title = element_text(hjust = 1))+
+  scale_x_continuous(breaks = c(-10,1,3,6,8,12,17,19,22,30,40), labels = c("Cords", "1", "3", "6", "8", "12", "17", "19", "22", "30", "Controls"))
+  
+ggsave(paste(wd.diversity, '/', 'Shannon', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+
+# awful code - makes ab plot doable from current data frame - do not use as example (code)
+
+ab <- vector()
+for (i in unique(div$tempID)){
+  temp <- div[div$tempID==i,]
+  for (j in unique(temp$tempM)){
+    temptemp <- temp[temp$tempM == j,]
+    
+    if(length(unique(temptemp$tempC)) == 2){
+      temptemptemp <- temptemp
+      temptemptemp$alpha <- temptemptemp$tempP[temptemptemp$tempC == 'alpha']
+      temptemptemp$beta <- temptemptemp$tempP[temptemptemp$tempC == 'beta']
+      if (length(ab) == 0){
+        ab <- temptemptemp[1,]
+      }
+      if (length(ab) > 0){
+        ab <- rbind(ab, temptemptemp[1,])
+      }
+    }
+  }
+}
+
+ggp <- ggplot(data = ab)+
+  geom_point(aes(x = beta, y =  alpha))+
+  labs(x = 'Beta Chain - Gini Coefficient', y = 'Alpha Chain - Gini Coefficient')+
+  theme_classic()+
+  geom_abline(intercept = 0, slope = 1)+
+  theme(plot.title = element_text(hjust = 1))+
+  scale_x_continuous(limits = c(0,1))+
+  scale_y_continuous(limits = c(0,1))
+
+
+ggsave(paste(wd.diversity, '/', 'AB', '.pdf', sep = ''), 
+       ggp, width = 10, height = 8, units = c('cm'))
+
+```
+
+
+
+# CD3 cell dose vs. diversities
+
+```{r}
+wd.diversity <- paste(wd.output,'/DiversityCD3CellDose', sep='')
+dir.create(wd.diversity)
+setwd(wd.diversity)
+
+dat.clin$Cell.dose..CD3..kg[dat.clin$Cell.dose..CD3..kg=='not processed'] <- ''
+
+div$CD3Dose <- NA
+for (i in dat.clin$ID){
+  CD3Dose <- dat.clin$Cell.dose..CD3..kg[dat.clin$ID==i]
+  if (CD3Dose != ''){
+    div$CD3Dose[div$tempID==i] <- eval(parse(text=CD3Dose))
+  }
+}
+
+ggp <- ggplot(data = div[div$tempM<=3 & div$tempC=='beta' & is.na(div$CD3Dose)==F,])+
+  geom_point(aes(x = CD3Dose, y = tempP, group = tempID, colour = tempID, shape = tempID))+
+  labs(x='CD3 Cell Dose (Cells/Kg)', y = 'Gini Coefficient', colour = 'ID', shape = 'ID')+
+  scale_shape_manual(name = 'ID', values=1:length(div$tempID[div$tempM<=3 & div$tempC=='beta' & is.na(div$CD3Dose)==F]))+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_continuous(labels = comma, breaks = c(1000000, 5000000, 10000000, 15000000, 20000000))+
+  theme_classic()+
+  theme(legend.title = element_blank())
+
+ggsave(paste(wd.diversity, '/', 'GiniCD3CellDose', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+cor.test( ~ CD3Dose + tempP,
+         data=div[div$tempM<=3 & div$tempC=='beta' & is.na(div$CD3Dose)==F,],
+         method = "spearman",
+         continuity = FALSE,
+         conf.level = 0.95)
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = CD3Dose, y = tempShan, group = tempID, colour = tempID))+
+  labs(x='CD3 Cell Dose', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  scale_x_continuous(labels = comma)+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'ShannonCD3CellDose', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = CD3Dose, y = tempSimp))+
+  labs(x='CD3 Cell Dose', y = 'Simpson\'s index')+
+  scale_y_continuous()+
+  scale_x_continuous(labels = comma)+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'SimpsonCD3CellDose', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+```
+
+# CD34 cell dose vs. diversities
+```{r}
+wd.diversity <- paste(wd.output,'/DiversityCD34CellDose', sep='')
+dir.create(wd.diversity)
+setwd(wd.diversity)
+
+dat.clin$Cell.dose..CD34..kg[dat.clin$Cell.dose..CD34..kg=='not processed'] <- ''
+
+div$CD34Dose <- NA
+for (i in dat.clin$ID){
+  CD34Dose <- dat.clin$Cell.dose..CD34..kg[dat.clin$ID==i]
+  if (CD34Dose != ''){
+    div$CD34Dose[div$tempID==i] <- eval(parse(text=CD34Dose))
+  }
+}
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = CD34Dose, y = tempP, group = tempID, colour = tempID))+
+  labs(x='CD34 Cell Dose', y = 'Gini Coefficient')+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_continuous(labels = comma)+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'GiniCD34CellDose', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = CD34Dose, y = tempShan, group = tempID, colour = tempID))+
+  labs(x='CD34 Cell Dose', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  scale_x_continuous(labels = comma)+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'ShannonCD34CellDose', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = CD34Dose, y = tempSimp))+
+  labs(x='CD34 Cell Dose', y = 'Simpson\'s index')+
+  scale_y_continuous()+
+  scale_x_continuous(labels = comma)+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'SimpsonCD34CellDose', '.pdf', sep = ''), 
+       ggp, width = 17, height = 10, units = c('cm'))
+```
+
+
+# Cell dose difference vs. diversities
+```{r}
+div$celldosediff <- div$CD3Dose - div$CD34Dose
+
+div$CD34Dose <- NA
+for (i in dat.clin$ID){
+  CD34Dose <- dat.clin$Cell.dose..CD34..kg[dat.clin$ID==i]
+  if (CD34Dose != ''){
+    div$CD34Dose[div$tempID==i] <- eval(parse(text=CD34Dose))
+  }
+}
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = celldosediff, y = tempP, group = tempID, colour = tempID))+
+  labs(x='Cell Dose', y = 'Gini Coefficient')+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_continuous(labels = comma)+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = celldosediff, y = tempShan, group = tempID, colour = tempID))+
+  labs(x='Cell Dose', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  scale_x_continuous(labels = comma)+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = celldosediff, y = tempSimp))+
+  labs(x='Cell Dose', y = 'Simpson\'s index')+
+  scale_y_continuous()+
+  scale_x_continuous(labels = comma)+
+  theme_classic()
+
+```
+
+# Age vs. diversities...?
+```{r}
+div$age <- NA
+for (i in dat.clin$ID){
+  age <- dat.clin$Age.at.CBT..months.[dat.clin$ID==i]
+  if (age != ''){
+    div$age[div$tempID==i] <- eval(parse(text=age))
+  }
+}
+
+div$age <- (div$age + div$tempM)/12
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = age, y = tempP, group = tempID, colour = tempID))+
+  labs(x='Age', y = 'Gini Coefficient')+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_continuous(labels = comma)+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = age, y = tempShan, group = tempID, colour = tempID))+
+  labs(x='Age', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  scale_x_continuous(labels = comma)+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = age, y = tempSimp))+
+  labs(x='Age', y = 'Simpson\'s index')+
+  scale_y_continuous()+
+  scale_x_continuous(labels = comma)+
+  theme_classic()
+```
+
+# Disease vs. diversities?
+```{r}
+div$disease <- NA
+for (i in dat.clin$ID){
+  disease <- dat.clin$Disease[dat.clin$ID==i]
+  if (disease != ''){
+    div$disease[div$tempID==i] <- disease
+  }
+}
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = disease, y = tempP, group = tempID, colour = tempID))+
+  labs(x='Disease', y = 'Gini Coefficient')+
+  scale_y_continuous(limits=c(0,1))+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = disease, y = tempShan, group = tempID, colour = tempID))+
+  labs(x='Disease', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = disease, y = tempSimp))+
+  labs(x='Disease', y = 'Simpson\'s index')+
+  scale_y_continuous()+
+  theme_classic()
+```
+
+# Conditioning vs. diversities?
+```{r}
+div$conditioning <- NA
+for (i in dat.clin$ID){
+  conditioning <- dat.clin$Conditioning[dat.clin$ID==i]
+  if (conditioning != ''){
+    div$conditioning[div$tempID==i] <- conditioning
+  }
+}
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = conditioning, y = tempP, group = tempID, colour = tempID))+
+  labs(x='Conditioning', y = 'Gini Coefficient')+
+  scale_y_continuous(limits=c(0,1))+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = conditioning, y = tempShan, group = tempID, colour = tempID))+
+  labs(x='Conditioning', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = conditioning, y = tempSimp))+
+  labs(x='Conditioning', y = 'Simpson\'s index')+
+  scale_y_continuous()+
+  theme_classic()
+
+```
+
+# Donor Matching
+```{r}
+div$matching <- NA
+for (i in dat.clin$ID){
+  matching <- dat.clin$Donor.matching[dat.clin$ID==i]
+  if (matching != ''){
+    div$matching[div$tempID==i] <- matching
+  }
+}
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = matching, y = tempP, group = tempID, colour = tempID))+
+  labs(x='Matching', y = 'Gini Coefficient')+
+  scale_y_continuous(limits=c(0,1))+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = matching, y = tempShan, group = tempID, colour = tempID))+
+  labs(x='Matching', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = matching, y = tempSimp))+
+  labs(x='Matching', y = 'Simpson\'s index')+
+  scale_y_continuous()+
+  theme_classic()
+
+```
+
+
+# GVHD Location
+```{r}
+div$gvhdlocation <- NA
+for (i in dat.clin$ID){
+  gvhdlocation <- dat.clin$GvHD.Location[dat.clin$ID==i]
+  if (gvhdlocation != ''){
+    div$gvhdlocation[div$tempID==i] <- gvhdlocation
+  }
+}
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = gvhdlocation, y = tempP, group = tempID, colour = tempID))+
+  labs(x='Location', y = 'Gini Coefficient')+
+  scale_y_continuous(limits=c(0,1))+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = gvhdlocation, y = tempShan, group = tempID, colour = tempID))+
+  labs(x='Location', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = gvhdlocation, y = tempSimp))+
+  labs(x='Location', y = 'Simpson\'s index')+
+  scale_y_continuous()+
+  theme_classic()
+
+```
+
+
+# GVHD Score
+```{r}
+wd.GVHD <- paste(wd.output,'/DiversityGVHD', sep='')
+dir.create(wd.GVHD)
+
+
+div$gvhdscore <- NA
+for (i in dat.clin$ID){
+  gvhdscore <- dat.clin$GvHD.Grade[dat.clin$ID==i]
+  div$gvhdscore[div$tempID==i] <- gvhdscore
+}
+
+fit <- lm(div$tempP ~ div$gvhdscore)
+
+ggp <- ggplot(data = div[div$tempC=='beta' & is.na(div$gvhdscore)==F,])+
+  geom_point(aes(x = gvhdscore, y = tempP, group = tempID, colour = tempID, shape = tempID))+
+  geom_smooth(method='lm', aes(x=gvhdscore, y=tempP), se = F)+
+  labs(x='GvHD Score', y = 'Gini Coefficient', colour = 'ID', shape = 'ID')+
+  scale_shape_manual(name = 'ID', values=1:length(div[div$tempC=='beta' & is.na(div$gvhdscore)==F,]))+
+  scale_y_continuous(limits=c(0,1))+
+  scale_x_continuous(breaks = c(0,1,2,3,4), labels = c('0', 'I', 'II', 'III', 'IV'))+
+  theme_classic()+
+  #theme(legend.position="none")
+  theme()
+
+ggsave(paste(wd.GVHD, '/', 'GiniGVHDScore', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+
+fit <- aov(gvhdscore ~ tempP, data=div) 
+summary(fit)
+
+ggp <- ggplot(data = div[div$tempC=='beta',])+
+  geom_point(aes(x = gvhdscore, y = tempShan, group = tempID, colour = tempID))+
+  geom_smooth(method='lm', aes(x=gvhdscore, y=tempShan), se = F)+
+  labs(x='Score', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.GVHD, '/', 'ShannonGVHDScore', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = gvhdscore, y = tempSimp))+
+  labs(x='Score', y = 'Simpson\'s index')+
+  scale_y_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.GVHD, '/', 'SimpsonGVHDScore', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+```
+
+# GVHD Score vs CD3 Cell Dose
+```{r}
+wd.GVHDDose <- paste(wd.output,'/GVHDCellDose', sep='')
+dir.create(wd.GVHDDose)
+
+
+#div$gvhdscore <- NA
+#for (i in dat.clin$ID){
+#  gvhdscore <- dat.clin$GvHD.Grade[dat.clin$ID==i]
+#  div$gvhdscore[div$tempID==i] <- gvhdscore
+#}
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = gvhdscore, y = CD3Dose, group = tempID, colour = tempID))+
+  #geom_smooth(aes(x=gvhdscore, y=CD3Dose), se = F)+
+  labs(x='GvHD Score', y = 'CD3 Cell Dose')+
+  #scale_y_continuous(limits=c(0,1))+
+  theme_classic()+
+  theme(legend.position="none")
+
+
+ggsave(paste(wd.GVHDDose, '/', 'GvHDCellDose', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+```
+
+
+# Survival
+```{r}
+div$survival <- NA
+for (i in dat.clin$ID){
+  survival <- dat.clin$Alive.Dead[dat.clin$ID==i]
+  div$survival[div$tempID==i] <- survival
+}
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = survival, y = tempP, group = tempID, colour = tempID))+
+  labs(x='Survival', y = 'Gini Coefficient')+
+  scale_y_continuous(limits=c(0,1))+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = survival, y = tempShan, group = tempID, colour = tempID))+
+  labs(x='Survival', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  theme_classic()
+
+ggp <- ggplot(data = div)+
+  geom_point(aes(x = survival, y = tempSimp))+
+  labs(x='Survival', y = 'Simpson\'s index')+
+  scale_y_continuous()+
+  theme_classic()
+
+```
+
+# Move diversity data over to dat.clin2
+```{r}
+dat.clin2$tempPa <- NA
+dat.clin2$tempShana <- NA
+dat.clin2$tempSimpa <- NA
+dat.clin2$tempPb <- NA
+dat.clin2$tempShanb <- NA
+dat.clin2$tempSimpb <- NA
+
+dat.clin2$CD3 <- as.numeric(dat.clin2$CD3)
+
+
+for (i in unique(div$tempID)){
+  for (j in unique(div$tempM[div$tempID==i])){
+    for (k in unique(div$tempC[div$tempID==i & div$tempM==j])){
+      temp <- div[div$tempID==i & div$tempM==j & div$tempC==k,]
+      
+      if (k == 'alpha'){
+        dat.clin2$tempPa[dat.clin2$ID==i & dat.clin2$Month==j] <- temp$tempP
+        dat.clin2$tempShana[dat.clin2$ID==i & dat.clin2$Month==j] <- temp$tempP <- temp$tempShan
+        dat.clin2$tempSimpa[dat.clin2$ID==i & dat.clin2$Month==j] <- temp$tempSimp
+      }
+      if (k == 'beta'){
+        dat.clin2$tempPb[dat.clin2$ID==i & dat.clin2$Month==j] <- temp$tempP
+        dat.clin2$tempShanb[dat.clin2$ID==i & dat.clin2$Month==j] <- temp$tempP <- temp$tempShan
+        dat.clin2$tempSimpb[dat.clin2$ID==i & dat.clin2$Month==j] <- temp$tempSimp
+      }
+      
+    }
+  }
+}
+```
+
+# CD3 counts vs diversity, by patient
+```{r}
+wd.diversity <- paste(wd.output,'/DiversityCD3Counts', sep='')
+dir.create(wd.diversity)
+setwd(wd.diversity)
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = CD3, y = tempShana, group = ID, colour = ID))+
+  geom_point(aes(x = CD3, y = tempShanb, group = ID, colour = ID))+
+  labs(x = bquote('CD3 Cells (*'*10^9/'L)'), y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'ShannonCD3Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2[is.na(dat.clin2$tempPb)==F,])+
+  #geom_point(aes(x = CD3, y = tempPa, group = ID, colour = ID))+
+  geom_point(aes(x = CD3, y = tempPb, group = ID, colour = ID, shape = ID))+
+  scale_shape_manual(name = 'ID', values=1:length(dat.clin2$ID[is.na(dat.clin2$tempPb)==F]))+
+  labs(x=bquote('CD3 Cells (*'*10^9/'L)'), y = 'Gini Coefficient', colour = 'ID', shape = 'ID')+
+  scale_y_continuous()+
+  scale_x_continuous(breaks = c(0,2,4,6,8,10,12,14,16))+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'GiniCD3Counts', '.pdf', sep = ''), 
+       ggp, width = 14, height = 10, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = CD3, y = tempSimpa, group = ID, colour = ID))+
+  geom_point(aes(x = CD3, y = tempSimpb, group = ID, colour = ID))+
+  labs(x='CD3', y = 'Simpson\'s Index')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'SimpsonCD3Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+```
+
+
+# CD4 counts vs diversity, by patient
+```{r}
+wd.diversity <- paste(wd.output,'/DiversityCD4Counts', sep='')
+dir.create(wd.diversity)
+setwd(wd.diversity)
+
+
+dat.clin2$CD4 <- as.numeric(dat.clin2$CD4)
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = CD4, y = tempShana, group = ID, colour = ID))+
+  geom_point(aes(x = CD4, y = tempShanb, group = ID, colour = ID))+
+  labs(x='CD4', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'ShannonCD4Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = CD4, y = tempPa, group = ID, colour = ID))+
+  geom_point(aes(x = CD4, y = tempPb, group = ID, colour = ID))+
+  labs(x='CD4', y = 'Gini Coefficient')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'GiniCD4Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = CD4, y = tempSimpa, group = ID, colour = ID))+
+  geom_point(aes(x = CD4, y = tempSimpb, group = ID, colour = ID))+
+  labs(x='CD4', y = 'Simpson\'s Index')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'SimpsonCD4Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+```
+
+# CD8 counts vs diversity, by patient
+```{r}
+wd.diversity <- paste(wd.output,'/DiversityCD8Counts', sep='')
+dir.create(wd.diversity)
+setwd(wd.diversity)
+
+dat.clin2$CD8 <- as.numeric(dat.clin2$CD8)
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = CD8, y = tempShana, group = ID, colour = ID))+
+  geom_point(aes(x = CD8, y = tempShanb, group = ID, colour = ID))+
+  labs(x='CD8', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'ShannonCD8Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = CD8, y = tempPa, group = ID, colour = ID))+
+  geom_point(aes(x = CD8, y = tempPb, group = ID, colour = ID))+
+  labs(x='CD8', y = 'Gini Coefficient')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'GiniCD8Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = CD8, y = tempSimpa, group = ID, colour = ID))+
+  geom_point(aes(x = CD8, y = tempSimpb, group = ID, colour = ID))+
+  labs(x='CD8', y = 'Simpson\'s Index')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'SimpsonCD8Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+```
+
+
+# Naive CD4 counts vs diversity, by patient
+```{r}
+wd.diversity <- paste(wd.output,'/DiversityNaiveCD4Counts', sep='')
+dir.create(wd.diversity)
+setwd(wd.diversity)
+
+dat.clin2$NaiveCD4 <- as.numeric(dat.clin2$NaiveCD4)
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = NaiveCD4, y = tempShana, group = ID, colour = ID))+
+  geom_point(aes(x = NaiveCD4, y = tempShanb, group = ID, colour = ID))+
+  labs(x='NaiveCD4', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'ShannonNaiveCD4Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = NaiveCD4, y = tempPa, group = ID, colour = ID))+
+  geom_point(aes(x = NaiveCD4, y = tempPb, group = ID, colour = ID))+
+  labs(x='NaiveCD4', y = 'Gini Coefficient')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'GiniNaiveCD4Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = NaiveCD4, y = tempSimpa, group = ID, colour = ID))+
+  geom_point(aes(x = NaiveCD4, y = tempSimpb, group = ID, colour = ID))+
+  labs(x='NaiveCD4', y = 'Simpson\'s Index')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'SimpsonNaiveCD4Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+```
+
+
+# Naive CD8 counts vs diversity, by patient
+```{r}
+wd.diversity <- paste(wd.output,'/DiversityNaiveCD8Counts', sep='')
+dir.create(wd.diversity)
+setwd(wd.diversity)
+
+dat.clin2$NaiveCD8 <- as.numeric(dat.clin2$NaiveCD8)
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = NaiveCD8, y = tempShana, group = ID, colour = ID))+
+  geom_point(aes(x = NaiveCD8, y = tempShanb, group = ID, colour = ID))+
+  labs(x='NaiveCD8', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'ShannonNaiveCD8Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = NaiveCD8, y = tempPa, group = ID, colour = ID))+
+  geom_point(aes(x = NaiveCD8, y = tempPb, group = ID, colour = ID))+
+  labs(x='NaiveCD8', y = 'Gini Coefficient')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'GiniNaiveCD8Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = NaiveCD8, y = tempSimpa, group = ID, colour = ID))+
+  geom_point(aes(x = NaiveCD8, y = tempSimpb, group = ID, colour = ID))+
+  labs(x='NaiveCD8', y = 'Simpson\'s Index')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.diversity, '/', 'SimpsonNaiveCD8Counts', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+```
+
+# TRECs
+```{r}
+dat.clin2$TRECs <- as.numeric(dat.clin2$TRECs)
+
+wd.TRECS <- paste(wd.output,'/DiversityTRECS', sep='')
+dir.create(wd.TRECS)
+
+  
+ggp <- ggplot(data = dat.clin2)+
+ #geom_point(aes(x = TRECs, y = tempShana, group = ID, colour = ID))+
+  geom_point(aes(x = Month, y = TRECs, group = ID))+
+  geom_smooth(aes(x = Month, y = TRECs))+
+  labs(x='Month', y = 'TRECs (Per Million Cells)')+
+  scale_y_log10(breaks = c(10,100,1000,10000,100000), label = comma)+
+  scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.TRECS, '/', 'TRECStime', '.pdf', sep = ''), 
+       ggp, width = 14, height = 8, units = c('cm'))
+
+cor.test( ~ Month + TRECs,
+         data=dat.clin2,
+         method = "spearman",
+         continuity = FALSE,
+         conf.level = 0.95)
+
+
+ggp <- ggplot(data = dat.clin2)+
+ #geom_point(aes(x = TRECs, y = tempShana, group = ID, colour = ID))+
+  geom_point(aes(x = TRECs, y = tempShanb, group = ID, colour = ID))+
+  labs(x='TRECs (Per Million Cells)', y = 'Shannon Entropy')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = TRECs, y = tempPa, group = ID, colour = as.factor('Alpha')))+
+  geom_point(aes(x = TRECs, y = tempPb, group = ID, colour = as.factor('Beta')))+
+  geom_smooth(aes(x = TRECs, y = tempPa),method = "lm", formula = y ~ splines::bs(x, 3), se = F)+
+
+  labs(x='TRECs (Per Million Cells)', y = 'Gini Coefficient', fill = 'Chain')+
+  scale_y_continuous()+
+  scale_x_continuous(limits = c(0,50000), label = comma)+
+  theme_classic()+
+  theme(legend.title = element_blank())
+
+cor.test( ~ tempPa + TRECs,
+         data=dat.clin2,
+         method = "spearman",
+         continuity = FALSE,
+         conf.level = 0.95)
+
+ggsave(paste(wd.TRECS, '/', 'GiniTRECS', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = TRECs, y = tempSimpa, group = ID, colour = ID))+
+  geom_point(aes(x = TRECs, y = tempSimpb, group = ID, colour = ID))+
+  labs(x='NaiveCD8', y = 'Simpson\'s Index')+
+  scale_y_continuous()+
+  scale_x_continuous()+
+  theme_classic()
+
+```
+
+# TRECs vs total number of naive cells
+```{r}
+dat.clin2$NaiveCD4 <- as.numeric(dat.clin2$NaiveCD4)
+dat.clin2$TRECs <- as.numeric(dat.clin2$TRECs)
+dat.clin2$NaiveCD8 <- as.numeric(dat.clin2$NaiveCD8)
+dat.clin2$NaiveTotal <- dat.clin2$NaiveCD4 + dat.clin2$NaiveCD8
+
+
+wd.TRECS2 <- paste(wd.output,'/TRECSNaiveCD4s', sep='')
+dir.create(wd.TRECS2)
+
+fit <- lm(dat.clin2$TRECs ~ dat.clin2$NaiveTotal)
+
+ggp <- ggplot(data = dat.clin2)+
+  geom_point(aes(x = TRECs, y = NaiveTotal, group = ID))+
+  geom_smooth(method='lm', aes(x=TRECs, y=NaiveTotal), se = F)+
+  labs(x='TRECs (Per Million Cells)', y = bquote('Naive CD4/CD8 Cells (*'*10^9/'L)'))+
+  scale_y_log10()+
+  scale_x_log10(breaks=c(0.1,1,10,100,1000,10000,100000), limits=c(10,100000), label=comma)+
+  theme_classic()
+
+
+ggsave(paste(wd.TRECS2, '/', 'NaiveCD4sCD8sTRECS', '.pdf', sep = ''), 
+       ggp, width = 12, height = 8, units = c('cm'))
+
+cor.test( ~ NaiveTotal + TRECs,
+         data=dat.clin2,
+         method = "spearman",
+         continuity = FALSE,
+         conf.level = 0.95)
+
+```
+
+
+
+```{r}
+fit <- lm(div$tempP ~ div$CD3Dose + div$age + div$conditioning + div$matching + div$gvhdscore + div$tempM)
+fit <- lm(div$tempP ~ div$gvhdscore)
+
+```
+
+```{r}
+fit <- lm(dat.clin2$tempPa ~ dat.clin2$Month + dat.clin2$TRECs)
+```
+
+
+
+# Amino Acid Plots
+
+```{r, warning=FALSE}
+#### Amino Acid Plots - frequency
+
+wd.AA <- paste(wd.output,'/AminoAcids', sep='')
+dir.create(wd.AA)
+
+
+#Control - Randomly generated AA freq based on number of possible nucleotide triplet combinations + 2 stop codons.
+numSamples <- 100000
+seq <- list('M','H','H','Q','Q','P','P','P','P','R','R','R','R','L','L','L','L','D','D','E','E','A','A',
+        'A','A','G','G','G','G','V','V','V','V','Y','Y','S','S','S','S','C','C','W','F','F','L','L',
+        'N','N','K','K','T','T','T','T','S','S','R','R','I','I','I')
+
+sample <- unlist(seq[sample(1:length(seq), numSamples, replace=T)])
+aaControl <- as.data.frame(table(sample))
+aaControl$sample <- factor(aaControl$sample, levels = aaControl$sample[order(-aaControl$Freq)])
+aaControl$normalised <- (aaControl$Freq/numSamples)*100
+ggp <- ggplot(data=aaControl, aes(x = aaControl$sample, y = aaControl$normalised)) + 
+    geom_bar(stat = 'identity') + 
+    scale_x_discrete()+
+    labs(title=paste('Control A.A. Seq. by # 3 Codons', '\t\t Num. Reads =', numSamples), x = 'Amino Acid', y = '% of Sample')+
+    theme_classic()
+
+ggsave(paste(wd.AA, '/', 'RandomlyGeneratedTripletNucleotideControl', '.pdf', sep = ''), 
+        ggp, width = 14, height = 10, units = c('cm'))
+
+
+#Plot for each individual
+for (i in unique(dat$ID)){
+  datTemp <- dat[dat$ID==i,]
+  datTemp.expanded <- datTemp[rep(row.names(datTemp), datTemp$V2),]
+  aa <- as.data.frame(table(unlist(strsplit(datTemp.expanded$V1,split=''))))
+  aa$Var1 <- factor(aa$Var1, levels = aa$Var1[order(-aa$Freq)])
+  aa$normalised <- (aa$Freq/sum(aa$Freq))*100
+  
+  aavsControl <- aa
+  aavsControl$cntrl <- aaControl$normalised[aavsControl$Var1==aaControl$sample]
+  
+  ggp <- ggplot(data=aa, aes(x = aa$Var1, y = aa$Freq)) + 
+    geom_bar(stat = 'identity') + 
+    scale_x_discrete()+
+    labs(title=paste(i, '\t\t Num. Reads =', sum(datTemp$V2)), x = 'Amino Acid', y = 'Frequency')+
+    theme_classic()
+  
+  ggsave(paste(wd.AA, '/', i, '.pdf', sep = ''), 
+         ggp, width = 10, height = 10, units = c('cm'))
+  
+  
+  #Plot patient AA representation VS control with AB line
+  ggp <- ggplot(data = aavsControl)+
+    geom_text(aes(x = cntrl, y = normalised, label = Var1, colour = Var1))+
+    geom_abline(slope=1, intercept=0)+
+    labs(title=paste(i, ' Amino Acid Representation Vs Control',sep = ''), x = 'Control AA Representation (% Sample)', y = 'Individual AA Representation (% Sample)')+
+    expand_limits(y = 0, x = 0)+
+    theme_classic()+
+    theme(legend.position = 'none')
+  
+  ggsave(paste(wd.AA, '/', i, '.pdf', sep = ''), 
+         ggp, width = 12, height = 10, units = c('cm'))
+}
+
+
+#AA frequency/time - calculation
+aa <- data.frame(character(),character(),character(),character(),character(),character())
+for (i in unique(dat$ID)){
+  counter <- 1
+  for (j in unique(dat$month[dat$ID==i])){
+    for (k in unique(dat$chain[dat$ID==i & dat$month == j])){
+  
+      datTemp <- dat[dat$ID==i & dat$month == j & dat$chain == k,]
+      datTemp.expanded <- datTemp[rep(row.names(datTemp), datTemp$V2),]
+      aaTemp <- as.data.frame(table(unlist(strsplit(datTemp.expanded$V1,split=''))))
+      aaTemp$ID <- i
+      aaTemp$Month <- j
+      aaTemp$Chain <- k
+      aaTemp$Freq <- (aaTemp$Freq/sum(aaTemp$Freq))*100
+      aa <- rbind(aa, aaTemp)
+    }
+  }
+}
+#AA frequency/time - plotting
+for (i in unique(aa$ID)){
+  ggps <- list()
+  counter <- 1
+  for (j in unique(aa$Chain[aa$ID==i])){
+    aaTemp <- aa[aa$ID==i & aa$Chain==j,]
+    ggp <- ggplot(data=aaTemp)+
+      geom_line(aes(x=Month, y=Freq, group=Var1, colour=Var1))+
+      geom_point(data=aaTemp[aaTemp$Month==min(aaTemp$Month),],aes(x=Month, y=Freq, colour=Var1))+
+      geom_text(data=aaTemp[aaTemp$Month!=min(aaTemp$Month),],aes(x=Month, y=Freq, label=Var1, colour=Var1))+
+      geom_text_repel(data = aaTemp[aaTemp$Month==min(aaTemp$Month),],aes(x=min(Month), y=Freq, label=Var1, colour=Var1))+
+      labs(title=paste(i,'-',j, ' Amino Acid Representation',sep = ''), x = 'Month', y = '% of Sample')+
+      theme_classic()+
+      theme(legend.position = 'none')
+    ggps[[counter]] <- ggp
+    counter <- counter + 1
+  }
+  pdf(paste(wd.AA, '/', i, 'AminoAcidRepresentation', '.pdf', sep = ''), width = 14, height = 8)
+  multiplot(plotlist = ggps, cols=length(ggps))
+  dev.off()
+
+}
+
+```
+
+
+#CDR3 Density Plots
+
+```{r, warning=FALSE}
+#### CDR3 Density Plots - frequency
+wd.freqdens <- paste(wd.output,'/FrequencyDensity', sep='')
+dir.create(wd.freqdens)
+
+wd.lendens <- paste(wd.output,'/LengthDensity', sep='')
+dir.create(wd.lendens)
+
+
+#Plot for each individual and chain
+for (i in unique(dat$ID)){
+  for (j in unique(dat$month[dat$ID==i])){
+    for (k in unique(dat$chain[dat$ID==i & dat$month==j])){
+      datTemp <- dat[dat$ID==i & dat$month==j & dat$chain==k,]
+      datTemp.expanded <- datTemp[rep(row.names(datTemp), datTemp$V2),]
+        ggp <- ggplot(data=datTemp.expanded)+
+          geom_line(aes(V2), stat='density')+
+          #geom_histogram(aes(V2))+
+          #scale_x_continuous(limits=c(0,10), breaks = c(0,1,2,3,4,5,6,7,8,9,10))+
+          scale_y_continuous(limits=c(0,0.15))+
+          #scale_y_log10()+
+          theme_classic()+
+          labs(title=paste(i, j, '-', k, '\t\t Num. Reads =', sum(datTemp$V2)), x='Freq. of CDR3 Sequences', y='Density')
+          #labs(title = '', x='Freq. of CDR3 Sequences', y='Density')
+      
+      ggsave(paste(wd.freqdens, '/', i, j, k, '.pdf', sep = ''), 
+             ggp, width = 10, height = 10, units = c('cm'))
+      
+    }
+  }
+}
+
+
+
+
+#Plot for each individual and chain
+for (i in unique(dat$ID)){
+  for (j in unique(dat$month[dat$ID==i])){
+    for (k in unique(dat$chain[dat$ID==i & dat$month==j])){
+      datTemp <- dat[dat$ID==i & dat$month==j & dat$chain==k,]
+      datTemp.expanded <- datTemp[rep(row.names(datTemp), datTemp$V2),]
+        ggp <- ggplot(data=datTemp.expanded)+
+          geom_line(aes(V2), stat='density')+
+          #geom_histogram(aes(V2))+
+          #scale_x_continuous(limits=c(0,10), breaks = c(0,1,2,3,4,5,6,7,8,9,10))+
+          #scale_y_continuous(limits=c(0,0.15))+
+          scale_x_continuous(limits = c(0,400))+
+          #scale_y_log10()+
+          theme_classic()+
+          labs(title=paste(i, j, '-', k, '\t\t Num. Reads =', sum(datTemp$V2)), x='Freq. of CDR3 Sequences', y='Density')
+          #labs(title = '', x='Freq. of CDR3 Sequences', y='Density')
+      
+      ggsave(paste(wd.freqdens, '/', 'lim', i, j, k, '.pdf', sep = ''), 
+             ggp, width = 10, height = 10, units = c('cm'))
+      
+    }
+  }
+}
+
+
+#Group plot
+for (i in unique(dat$ID)){
+  ggps <- list()
+  counter <- 1
+  for (j in unique(dat$month[dat$ID==i])){
+    for (k in unique(dat$chain[dat$ID==i & dat$month == j])){
+  
+      datTemp <- dat[dat$ID==i & dat$month == j & dat$chain == k,]
+      ggp <- ggplot(data=datTemp)+
+        geom_line(aes(V2), stat='density')+
+        #scale_x_log10()+
+        theme_classic()+
+        labs(title=paste(i, j, k, paste('\t Num. Reads = ', sum(datTemp$V2), sep = ''), sep = ''), x='Freq. of CDR3 Sequences', y='Density')
+        #labs(title = '', x='Freq. of CDR3 Sequences', y='Density')
+
+      
+      ggps[[counter]] <- ggp
+      counter <- counter + 1
+    }
+  }
+  pdf(paste(wd.freqdens, '/', i, 'SampleCDR3Frequency', '.pdf', sep = ''), width = 12, height = 8)
+  multiplot(plotlist = ggps, cols=counter/2)
+  dev.off()
+}
+
+
+####CDR3 Density Plots - Length (amino acids)
+#Calculate CDR3 Length
+dat$CDR3Len <- nchar(as.character(dat$V1))
+
+#Plot for each individual
+for (i in unique(dat$ID)){
+  for (j in unique(dat$month[dat$ID==i])){
+    for (k in unique(dat$chain[dat$ID==i & dat$month==j])){
+      datTemp <- dat[dat$ID==i & dat$month==j & dat$chain==k,]
+      datTemp.expanded <- datTemp[rep(row.names(datTemp), datTemp$V2),]
+      ggp <- ggplot(data=datTemp.expanded)+
+        geom_line(aes(CDR3Len), stat='density')+
+        scale_x_continuous(limits=c(0,max(dat$CDR3Len)))+
+        scale_y_continuous(limits=c(0,0.8))+
+        theme_classic()+
+        labs(title=paste(i, j, k, '\t\t Num. Reads =', sum(datTemp$V2)), x='Length of CDR3 Sequences', y='Density')
+        #labs(title = '', x='Freq. of CDR3 Sequences', y='Density')
+
+      
+      ggsave(paste(wd.lendens, '/', i, '.pdf', sep = ''), 
+             ggp, width = 10, height = 10, units = c('cm'))
+
+    }
+  }
+}
+
+#Group plot
+for (i in unique(dat$ID)){
+  ggps <- list()
+  counter <- 1
+  for (j in unique(dat$month[dat$ID==i])){
+    for (k in unique(dat$chain[dat$ID==i & dat$month == j])){
+  
+      datTemp <- dat[dat$ID==i & dat$month == j & dat$chain == k,]
+      datTemp.expanded <- datTemp[rep(row.names(datTemp), datTemp$V2),]
+      ggp <- ggplot(data=datTemp.expanded)+
+        geom_line(aes(CDR3Len), stat='density')+
+        scale_x_continuous(limits=c(0,max(dat$CDR3Len)))+
+        scale_y_continuous(limits=c(0,0.65))+
+        theme_classic()+
+        theme(axis.title.x=element_blank())+
+        labs(title=paste(i, j, k, paste('\t Num. Reads = ' ,sum(datTemp$V2), sep = ''), sep = ''), x='Length of CDR3 Sequences', y='Density')
+        #labs(title = '', x='Freq. of CDR3 Sequences', y='Density')
+
+      
+      ggps[[counter]] <- ggp
+      counter <- counter + 1
+    }
+  }
+  pdf(paste(wd.lendens, '/', i, 'SampleCDR3Lengths', '.pdf', sep = ''), width = 12, height = 8)
+  multiplot(plotlist = ggps, cols=counter/2)
+  dev.off()
+}
+
+```
+
+
+# CD3 counts vs diversity, by patient
+```{r}
+wd.spec <- paste(wd.output,'/Spectratyping', sep='')
+dir.create(wd.spec)
+setwd(wd.spec)
+
+ggp <- ggplot(data = dat.clin2[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None',])+
+  #geom_point(aes(x = Spectratyping, y = tempShana, group = ID, colour = ID))+
+  geom_jitter(aes(x = Spectratyping, y = tempShanb, group = ID, colour = ID, shape = ID), width = 0.06)+
+  #geom_point(aes(x = Spectratyping, y = tempShanb, group = ID, colour = ID))+
+  scale_shape_manual(name = 'ID', values=1:length(dat.clin2$ID[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None']))+
+  labs(x='Spectratyping', y = 'Shannon Entropy', colour = 'ID', shape = 'ID')+
+  scale_y_continuous()+
+  #scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.spec, '/', 'ShannonSpec', '.pdf', sep = ''), 
+       ggp, width = 12, height = 10, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None',])+
+  #geom_point(aes(x = Spectratyping, y = tempPa, group = ID, colour = ID))+
+  geom_jitter(aes(x = Spectratyping, y = tempPb, group = ID, colour = ID, shape = ID), width = 0.06)+
+  #geom_point(aes(x = Spectratyping, y = tempPb, group = ID, colour = ID))+
+  scale_shape_manual(name = 'ID', values=1:length(dat.clin2$ID[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None']))+
+  labs(x='Spectratyping', y = 'Gini Coefficient', colour = 'ID', shape = 'ID')+
+  scale_y_continuous()+
+  #scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.spec, '/', 'GiniSpec', '.pdf', sep = ''), 
+       ggp, width = 12, height = 10, units = c('cm'))
+
+ggp <- ggplot(data = dat.clin2[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None',])+
+  #geom_point(aes(x = Spectratyping, y = tempSimpa, group = ID, colour = ID))+
+  geom_point(aes(x = Spectratyping, y = tempSimpb, group = ID, colour = ID))+
+  labs(x='Spectratyping', y = 'Simpson\'s Index')+
+  scale_y_continuous()+
+  #scale_x_continuous()+
+  theme_classic()
+
+ggsave(paste(wd.spec, '/', 'SimpsonSpec', '.pdf', sep = ''), 
+       ggp, width = 12, height = 10, units = c('cm'))
+
+#gini kruskal
+gscores <- c(dat.clin2$tempPa[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None'],dat.clin2$tempPb[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None'])
+
+spec <- c(dat.clin2$Spectratyping[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None'],dat.clin2$Spectratyping[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None'])
+
+spec <- spec[which(is.na(gscores)!=T)]
+gscores <- gscores[which(is.na(gscores)!=T)]
+kruskal.test(gscores ~ as.factor(spec))
+
+#shannon kruskal
+gscores <- c(dat.clin2$tempShana[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None'],dat.clin2$tempShanb[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None'])
+
+spec <- c(dat.clin2$Spectratyping[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None'],dat.clin2$Spectratyping[!dat.clin2$Spectratyping=='' & !dat.clin2$Spectratyping=='None'])
+
+spec <- spec[which(is.na(gscores)!=T)]
+gscores <- gscores[which(is.na(gscores)!=T)]
+kruskal.test(gscores ~ as.factor(spec))
+
+
+
+```
+
+
+```{r}
+wd.pie <- paste(wd.output,'/PieCharts', sep='')
+dir.create(wd.pie)
+setwd(wd.pie)
+
+tempDat <- dat[order(dat$V2),]
+ggp1 <- ggplot(data = tempDat[tempDat$ID=='A' & tempDat$month==3 & tempDat$chain=='beta',], aes(x="", y=V2, fill=V2, order = V2))+
+  geom_bar(width = 1, stat = "identity")+
+  coord_polar("y", start=0)+
+  scale_fill_distiller(palette = "RdPu", name = 'Frequency', guide = guide_colorbar(draw.ulim = T, draw.llim = T))+
+  theme_classic()+ theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank(),
+          panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+          panel.grid.minor=element_blank(),plot.background=element_blank())
+  
+#ggsave(paste(wd.pie, '/', 'aaf3b', '.pdf', sep = ''),
+ggsave(paste(wd.pie, '/', 'aaf3b', '.jpeg', sep = ''),
+      ggp1, width = 12, height = 10, units = c('cm'))
+
+
+```
+
+```{r}
+setwd(wd.pie)
+
+ggp2 <- ggplot(data = tempDat[tempDat$ID=='A' & tempDat$month==12 & tempDat$chain=='beta',], aes(x="", y=V2, fill=V2, order = V2))+
+  geom_bar(width = 1, stat = "identity")+
+  coord_polar("y", start=0)+
+  theme_classic()+ theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank(),
+          panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+          panel.grid.minor=element_blank(),plot.background=element_blank())+
+  scale_fill_distiller(palette = "RdPu", name = 'Frequency', guide = guide_colorbar(draw.ulim = T, draw.llim = T))
+
+#ggsave(paste(wd.pie, '/', 'aaf12b', '.pdf', sep = ''), 
+ggsave(paste(wd.pie, '/', 'aaf12b', '.jpeg', sep = ''), 
+      ggp2, width = 12, height = 10, units = c('cm'))
+```
+
+```{r}
+setwd(wd.pie)
+
+ggp3 <- ggplot(data = tempDat[tempDat$ID=='CBC' & tempDat$month==-10 & tempDat$chain=='beta',], aes(x="", y=V2, fill=V2, order = V2))+
+  geom_bar(width = 1, stat = "identity")+
+  coord_polar("y", start=0)+
+  theme_classic()+ theme(axis.line=element_blank(),axis.text.x=element_blank(),
+          axis.text.y=element_blank(),axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank(),
+          panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+          panel.grid.minor=element_blank(),plot.background=element_blank())+
+  scale_fill_distiller(palette = "RdPu", name = 'Frequency', guide = guide_colorbar(draw.ulim = T, draw.llim = T))
+
+#ggsave(paste(wd.pie, '/', 'aaf12b', '.pdf', sep = ''), 
+ggsave(paste(wd.pie, '/', 'cbc-10b', '.jpeg', sep = ''), 
+      ggp3, width = 12, height = 10, units = c('cm'))
+```
+
+
+# Top 20 clonotypes
+```{r}
+# define dir??
+wd.top20 <- paste(wd.output,'/top20', sep='')
+dir.create(wd.top20)
+
+# loop through ID
+
+for (i in unique(dat$ID)){
+      tempDat <- dat[dat$ID == i,]
+  
+  clonotypeDat <- data.frame(vector(), vector(), vector(), vector(), vector(), vector())
+  
+  names(clonotypeDat) <- names(dat)
+  
+  for (j in unique(tempDat$month)){
+    
+   temptempDat <- tempDat[tempDat$month == j,]
+   
+   temptempDat <- temptempDat[temptempDat$chain == 'beta',]
+   
+   depth <- sum(temptempDat$V2)
+    
+   temptempDat <- temptempDat[order(-temptempDat$V2),]
+   
+   temptempDat <- temptempDat[1:20,]
+    
+   clonotypeDat <- rbind(clonotypeDat, temptempDat)
+
+  }
+    
+  clonotypeDat$normV2 <- (100/depth) * clonotypeDat$V2
+  
+  ggp <- ggplot(data = clonotypeDat)+
+    geom_point(aes(x = month, y = normV2, group = V1, colour = V1))+
+    geom_line(aes(x = month, y = normV2, group = V1, colour = V1))+
+    
+    theme_classic()+
+    theme(legend.position = 'none')+
+    scale_x_continuous(breaks = c(-10, 0, 1, 3, 4, 6, 12, 17, 19, 22, 30), labels = c('Cords', '0', '1', '3', '4', '6', '12', '17 ', '19', '22', '30'))+
+    labs(x = 'Month', y = '% of Total Reads')
+
+  ggsave(paste(wd.top20, '/', i, '.pdf', sep = ''), 
+      ggp, width = 7, height = 6, units = c('cm'))
+
+}
+```
+
+```{r}
+# Renyi diversity
+renyiDat <- vector()
+renyiMatrix <- matrix()
+rnames <- vector()
+months <- vector()
+ID <- vector()
+chain <- vector()
+
+count <- 0
+
+for (i in unique(dat$ID)){
+  for (j in unique(dat$month[dat$ID==i])){
+    for (k in unique(dat$chain[dat$ID==i & dat$month==j])){
+      
+      months <- append(months, j)
+      ID <- append(ID, i)
+      chain <- append(chain, k)
+      
+      count <- count + 1
+      
+      rnames <- append(rnames, paste(i, j, k, sep = ''))
+      
+      temp <- dat[dat$ID == i & dat$month == j & dat$chain == k,]
+      renyiTemp <- as.data.frame(renyi(temp$V2))
+      renyinames <- names(renyi(temp$V2))
+      
+      if(length(renyiMatrix) != 1){
+        renyiMatrix <- rbind(renyiMatrix, as.numeric(renyi(temp$V2)))
+      }
+      
+      if(length(renyiMatrix) == 1){
+        renyiMatrix <- as.numeric(renyi(temp$V2))
+      }
+
+      #renyiMatrix <- append(renyiMatrix, renyiTemp)
+      renyiTemp$index <- row.names(renyiTemp)
+      renyiTemp$ID <- i
+      renyiTemp$month <- j
+      renyiTemp$chain <- k
+      renyiTemp$uniqueID <- paste(i, j, k, sep = '')
+      
+      if (length(renyiDat) == 0){
+        renyiDat <- renyiTemp
+      } 
+      if (length(renyiDat) > 0){
+        renyiDat <- rbind(renyiDat, renyiTemp)
+      }  
+
+    
+    }
+  }
+}
+temp2 <- cbind(as.data.frame(renyi(temp$V2)),as.data.frame(renyi(temp$V2)))
+
+renyiDatMaster <- renyiDat
+
+colnames(renyiMatrix) <- renyinames
+rownames(renyiMatrix) <- rnames
+
+#t(renyiMatrix)
+
+pca <- prcomp(renyiMatrix, scale. = T, center = T)
+
+
+ggplot()+
+  geom_point(aes(x = pca$x[,1], y = pca$x[,2], colour = ID))+
+  theme_classic()
+
+tsne <- Rtsne(renyiMatrix, dims = 2, perplexity=28, verbose=TRUE, max_iter = 500)
+
+
+```
+
+```{r}
+# Renyi plot
+
+renyiDat <- renyiDatMaster[renyiDatMaster$month <= 0,]
+
+ggp <- ggplot(data = renyiDat)+
+  geom_point(aes(x = rep(seq(1, length(unique(renyiDat$index))), length(renyiDat$uniqueID)/length(unique(renyiDat$index))), y = renyiDat$`renyi(temp$V2)`, group = renyiDat$uniqueID))+
+  geom_line(aes(x = rep(seq(1, length(unique(renyiDat$index))), length(renyiDat$uniqueID)/length(unique(renyiDat$index))), y = renyiDat$`renyi(temp$V2)`, group = renyiDat$uniqueID))+
+  scale_x_continuous(breaks = seq(1, length(unique(renyiDat$index))), labels = unique(renyiDat$index))+
+  scale_y_continuous(limits = c(0.1, 10))+
+  labs(x = 'Scale', y = 'Renyi Diversity')+
+  theme_classic()
+  
+```
+
+```{r}
+# Renyi plot
+
+renyiDat <- renyiDatMaster[renyiDatMaster$month >= 0 & renyiDatMaster$month < 6,]
+
+ggp <- ggplot(data = renyiDat)+
+  geom_point(aes(x = rep(seq(1, length(unique(renyiDat$index))), length(renyiDat$uniqueID)/length(unique(renyiDat$index))), y = renyiDat$`renyi(temp$V2)`, group = renyiDat$uniqueID))+
+  geom_line(aes(x = rep(seq(1, length(unique(renyiDat$index))), length(renyiDat$uniqueID)/length(unique(renyiDat$index))), y = renyiDat$`renyi(temp$V2)`, group = renyiDat$uniqueID))+
+  scale_x_continuous(breaks = seq(1, length(unique(renyiDat$index))), labels = unique(renyiDat$index))+
+  scale_y_continuous(limits = c(0.1, 10))+
+  labs(x = 'Scale', y = 'Renyi Diversity')+
+  theme_classic()
+  
+```
+
+```{r}
+# Renyi plot
+
+renyiDat <- renyiDatMaster[renyiDatMaster$month >= 6,]
+
+ggp <- ggplot(data = renyiDat)+
+  geom_point(aes(x = rep(seq(1, length(unique(renyiDat$index))), length(renyiDat$uniqueID)/length(unique(renyiDat$index))), y = renyiDat$`renyi(temp$V2)`, colour = as.factor(renyiDat$ID), group = renyiDat$uniqueID))+
+  geom_line(aes(x = rep(seq(1, length(unique(renyiDat$index))), length(renyiDat$uniqueID)/length(unique(renyiDat$index))), y = renyiDat$`renyi(temp$V2)`, colour = as.factor(renyiDat$ID), group = renyiDat$uniqueID))+
+  scale_x_continuous(breaks = seq(1, length(unique(renyiDat$index))), labels = unique(renyiDat$index))+
+  scale_y_continuous(limits = c(0.1, 10))+
+  labs(x = 'Scale', y = 'Renyi Diversity')+
+  theme_classic()
+  
+```
+
+```{r}
+wd.renyi <- paste(wd.output,'/Renyi', sep='')
+dir.create(wd.renyi)
+
+renyiDat <- renyiDatMaster
+
+ggp <- ggplot(data = renyiDat)+
+  geom_point(aes(x = rep(seq(1, length(unique(renyiDat$index))), length(renyiDat$uniqueID)/length(unique(renyiDat$index))), y = renyiDat$`renyi(temp$V2)`, colour = as.factor(renyiDat$ID), group = renyiDat$uniqueID))+
+  geom_line(aes(x = rep(seq(1, length(unique(renyiDat$index))), length(renyiDat$uniqueID)/length(unique(renyiDat$index))), y = renyiDat$`renyi(temp$V2)`, colour = as.factor(renyiDat$ID), group = renyiDat$uniqueID))+
+  scale_x_continuous(breaks = seq(1, length(unique(renyiDat$index))), labels = unique(renyiDat$index))+
+  scale_y_continuous(limits = c(1, 10))+
+  #scale_y_log10()+
+  labs(x = 'Scale', y = 'Renyi Diversity', colour = 'ID')+
+  theme_classic()
+  
+ggsave(paste(wd.renyi, '/', 'RenyiSamples', '.pdf', sep = ''), 
+    ggp, width = 17, height = 12, units = c('cm'))
+
+
+```
+
+
+
+```{r}
+#Read in gene name files...
+gnwd <- "/home/ben/Desktop/CBTSubsampleAnalysisPipeline23Nov17/CBTAnalysisOct17/Input_GNTranslator"
+GNFiles <- list.files(path=gnwd, pattern=".dcrcdr3.gz", full.names=T, recursive=FALSE)
+
+if (length(GNFiles)>0){
+  gnDat <- data.frame(character(), character(), character(), character(), character(), character(), character(), character(), character(), character())
+  
+  for(file in GNFiles){
+    fileName <- strsplit(file, split='/')[[1]]
+    fileName <- fileName[length(fileName)]
+    fileName <- strsplit(fileName, split='[.]')[[1]][1]
+    sampleID <- strsplit(fileName, split='_')[[1]][3]
+    chain <- strsplit(fileName, split='-')[[1]][2]
+    ID <- strsplit(sampleID, split='-')[[1]][1]
+    month <- unlist(strsplit(gsub("[^0-9]", "", unlist(ID)), ""))
+    month <- as.numeric(paste(month, collapse = ''))
+    ID = gsub("[[:digit:]]", "", ID)
+    
+    #Read in cdr3 file
+    gnDatTemp <- read.csv(file,header=F, stringsAsFactors=F)
+    gnDatTemp$ID <- ID
+    gnDatTemp$month <- month
+    gnDatTemp$chain <- chain
+    gnDatTemp$sampleID <- sampleID
+    gnDat <- rbind(gnDat,gnDatTemp)
+  }
+  temp <- unlist(strsplit(gnDat$V5, split=':'))
+  gnDat$freqID <- temp[seq(1,length(temp),2)]
+  gnDat$CDR3 <- temp[seq(2,length(temp),2)]
+  
+  gnDat.expanded <- gnDat[rep(row.names(gnDat), gnDat$V6),]
+}
+```
+
+
+
+#V/J Gene Usage Plots
+
+
+```{r}    
+#CDR3 length by gene name
+
+#Freq of V J usage
+
+gnOutputPath <- paste(wd.output,'/VJGene', sep='')
+
+dir.create(gnOutputPath)
+
+genes <- c('TRBV5-1','TRBV5-4','TRBV5-5','TRBV5-6', 'TRBV5-8')
+gene <- 'TRBV5'
+
+gnDat$Vfam <- sapply(strsplit(gnDat$V1, "-"), `[`, 1)
+
+gnDat$CDR3Len <-  nchar(as.character(gnDat$CDR3))
+
+#V Gene
+for (i in unique(gnDat$ID)){
+  for (j in unique(gnDat$month)){
+    gnDat.expanded <- gnDat[gnDat$ID==i & gnDat$month == j,]
+    gnDat.expanded <- gnDat.expanded[gnDat.expanded$V1 %in% genes,]
+    #gnDat.expanded <- gnDat.expanded[gnDat.expanded$Vfam %in% gene,]
+    gnDat.expanded <- gnDat.expanded[rep(row.names(gnDat.expanded), gnDat.expanded$V6),]
+    gnDat.expanded <- gnDat.expanded %>% mutate(V1 = reorder(V1, CDR3Len, median))
+    gnDat.expanded$V1 = factor(gnDat.expanded$V1, levels=c('TRBV5-8', 'TRBV5-6', 'TRBV5-5', 'TRBV5-4', 'TRBV5-3', 'TRBV5-1'))
+    
+      green <- brewer.pal(9,'Pastel1')
+      colfunc <- colorRampPalette(green)
+      col <- colfunc(length(unique(gnDat$V1)))
+      ggp <- ggplot(gnDat.expanded, aes(x = CDR3Len, y=V1, height = ..count..))+
+        geom_joy(scale = 4, aes(fill=V1), stat = 'density')+theme_joy()+
+        scale_fill_manual(values = col) +
+        scale_y_discrete(expand = c(0.01, 0))+
+        scale_x_continuous(expand = c(0,0))+
+        theme(legend.position = 'none')+
+        labs(x='CDR3 Length', y = 'V5 Subfamilies')
+      
+      ggsave(paste(gnOutputPath, '/', i, j, '-', 'VGenes', '.pdf', sep = ''), 
+                  ggp, width = 12, height = 12, units = c('cm'))
+      
+      
+    gnDat.expanded <- gnDat[gnDat$ID==i & gnDat$month == j,]
+    gnDat.expanded <- gnDat.expanded[gnDat.expanded$V1 %in% genes,]
+    #gnDat.expanded <- gnDat.expanded[gnDat.expanded$Vfam %in% gene,]
+    gnDat.expanded <- gnDat.expanded[rep(row.names(gnDat.expanded), gnDat.expanded$V6),]
+    gnDat.expanded <- gnDat.expanded %>% mutate(V1 = reorder(V1, CDR3Len, median))
+    gnDat.expanded$V1 = factor(gnDat.expanded$V1, levels=c('TRBV5-8', 'TRBV5-6', 'TRBV5-5', 'TRBV5-4', 'TRBV5-3', 'TRBV5-1'))
+    
+      green <- brewer.pal(9,'Pastel1')
+      colfunc <- colorRampPalette(green)
+      col <- colfunc(length(unique(gnDat$V1)))
+      ggp <- ggplot(gnDat.expanded, aes(x = CDR3Len, y=Vfam))+
+        geom_joy(scale = 4, aes(fill=Vfam))+theme_joy()+
+        scale_fill_manual(values = col) +
+        scale_y_discrete(expand = c(0.01, 0))+
+        scale_x_continuous(expand = c(0,0))+
+        theme(legend.position = 'none')+
+        labs(x='CDR3 Length', y = 'V5 Family')
+      
+      ggsave(paste(gnOutputPath, '/', i, j, '-', 'VGenes-V5', '.pdf', sep = ''), 
+                  ggp, width = 12, height = 12, units = c('cm'))
+  }
+}
+    ```
+

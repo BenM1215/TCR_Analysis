@@ -1,0 +1,101 @@
+---
+title: "CBTSubSampling"
+author: "Ben Margetts and Athina"
+date: "11/10/2017"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+```{r}
+subSampleLimit <- 7.5 #Ben advises 10.
+```
+
+
+
+```{r}
+inputPath <- '/home/ben/Desktop/CBTSubsampleAnalysisPipeline/CBTSubSampleOct17/Input'
+outputPath <- '/home/ben/Desktop/CBTSubsampleAnalysisPipeline/CBTSubSampleOct17/Output'
+
+setwd(inputPath)
+
+files <- list.files(path=inputPath)
+
+largest <- 0
+largestFile <- ''
+
+smallest <- 100000000
+smallestFile <- ''
+for (file in files){
+  tempFile <- read.csv(file, header = F, stringsAsFactors = F)
+  tempSize <- sum(tempFile$V2)
+
+  if (tempSize > largest) {
+    largest <- tempSize
+    largestFile <-file 
+    }
+  
+  if (tempSize < smallest) {
+    smallest <- tempSize
+    smallestFile <- file
+    }
+}
+
+#Make sure > 10% of largest TCR
+subsampleable <- vector()
+
+for (file in files){
+  tempFile <- read.csv(file, header = F, stringsAsFactors = F)
+  
+  if (sum(tempFile$V2)/largest > (subSampleLimit/100)){ #then it's within 10%
+    subsampleable <- append(subsampleable, file)
+  }
+}
+
+print(c('Total number of files = ', length(files)))
+print(c('Total number of files that can be subsampled = ', length(subsampleable)))
+
+#redefine smallest (now from subsampleable sequences) - note - must be more efficient way to do this?
+smallest <- 100000000
+for (file in subsampleable){
+  tempFile <- read.csv(file, header = F, stringsAsFactors = F)
+  tempSize <- sum(tempFile$V2)
+
+  if (tempSize < smallest) {
+    smallest <- tempSize
+    smallestFile <- file
+    }
+}
+```
+
+
+```{r}
+setwd(inputPath)
+
+#subsample all files, in-turn to smallest TCR
+
+for (file in subsampleable){
+  #expand cdr3 by frequency
+  tempFile <- read.csv(file, header = F, stringsAsFactors = F)
+  tempFile.expanded <- tempFile[rep(row.names(tempFile), tempFile$V2),]
+  
+  #generate sequence of numbers, 1: length of expanded file
+  tempLen <- length(tempFile.expanded$V1)
+  samplePool <- seq(1:tempLen)
+
+  #sample from numerical sequence, without replacement
+  index <- sample(samplePool, smallest, replace = F)
+  
+  #use sampled vector of integers to access expanded dataframe, taking at vector of indexes
+  subsampled <- tempFile.expanded[[1]][index]
+  
+  #collapse back into traditional .cdr3 freq format
+  subsampled.collapsed <- as.data.frame(table(subsampled))
+  colnames(subsampled.collapsed) <- c('Seq', 'Freq')
+  
+  #write as output file in output folder
+  write.table(subsampled.collapsed, paste(outputPath, '/', file, 'subsample', '.csv', sep = ''), row.names = F, col.names = T, sep = ',')
+}
+```
+
